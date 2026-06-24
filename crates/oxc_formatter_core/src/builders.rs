@@ -816,9 +816,10 @@ impl<'fmt, 'ast, C> BestFitting<'fmt, 'ast, C> {
 impl<'ast, C> Format<'ast, C> for BestFitting<'_, 'ast, C> {
     fn fmt(&self, f: &mut Formatter<'_, 'ast, C>) {
         let mut buffer = VecBuffer::new(f.state_mut());
+        let allocator = buffer.state().allocator();
         let variants = self.variants.items();
 
-        let mut formatted_variants = Vec::with_capacity(variants.len());
+        let mut formatted_variants = ArenaVec::with_capacity_in(variants.len(), &allocator);
 
         for variant in variants {
             buffer.write_element(FormatElement::Tag(StartEntry));
@@ -827,8 +828,6 @@ impl<'ast, C> Format<'ast, C> for BestFitting<'_, 'ast, C> {
 
             formatted_variants.push(buffer.take_vec().into_arena_slice());
         }
-
-        let formatted_variants = ArenaVec::from_iter_in(formatted_variants, f);
 
         // SAFETY: The constructor guarantees that there are always at least two variants. It's, therefore,
         // safe to call into the unsafe `from_vec_unchecked` function
