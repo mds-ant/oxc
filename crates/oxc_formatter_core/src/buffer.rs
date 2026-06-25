@@ -32,9 +32,13 @@ pub trait Buffer<'ast, C> {
     /// Glue for usage of the [`write!`] macro with implementors of this trait.
     ///
     /// This method should generally not be invoked manually, but rather through the [`write!`] macro itself.
-    fn write_fmt(mut self: &mut Self, arguments: Arguments<'_, 'ast, C>) {
-        write::<C>(&mut self, arguments);
-    }
+    ///
+    /// Intentionally has no default body: a default that works for `Self: ?Sized` has to re-borrow
+    /// `self` as `&mut &mut Self` before unsizing, which makes the resulting `Formatter`'s vtable
+    /// target the `<&mut W as Buffer>` blanket forwarder instead of `Self`. Each `Sized` impl
+    /// should provide `write::<C>(self, arguments)`; [`Formatter`](crate::Formatter) iterates the
+    /// arguments directly.
+    fn write_fmt(&mut self, arguments: Arguments<'_, 'ast, C>);
 
     /// Returns the formatting state relevant for this formatting session.
     fn state(&self) -> &FormatState<'ast, C>;
@@ -140,6 +144,10 @@ impl<'ast, C> Buffer<'ast, C> for VecBuffer<'_, 'ast, C> {
         self
     }
 
+    fn write_fmt(&mut self, arguments: Arguments<'_, 'ast, C>) {
+        write::<C>(self, arguments);
+    }
+
     fn state(&self) -> &FormatState<'ast, C> {
         self.state
     }
@@ -197,6 +205,10 @@ where
         self.inner.elements()
     }
 
+    fn write_fmt(&mut self, arguments: Arguments<'_, 'ast, C>) {
+        write::<C>(self, arguments);
+    }
+
     fn state(&self) -> &FormatState<'ast, C> {
         self.inner.state()
     }
@@ -233,6 +245,10 @@ where
 
     fn elements(&self) -> &[FormatElement<'a>] {
         self.inner.elements()
+    }
+
+    fn write_fmt(&mut self, arguments: Arguments<'_, 'a, C>) {
+        write::<C>(self, arguments);
     }
 
     fn state(&self) -> &FormatState<'a, C> {
@@ -422,6 +438,10 @@ impl<'ast, C> Buffer<'ast, C> for RemoveSoftLinesBuffer<'_, 'ast, C> {
 
     fn elements(&self) -> &[FormatElement<'ast>] {
         self.inner.elements()
+    }
+
+    fn write_fmt(&mut self, arguments: Arguments<'_, 'ast, C>) {
+        write::<C>(self, arguments);
     }
 
     fn state(&self) -> &FormatState<'ast, C> {
