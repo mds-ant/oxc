@@ -10,7 +10,6 @@ use oxc_allocator::ArenaVec;
 use crate::{
     Argument, Arguments, Buffer, Format, FormatContext, FormatElement, FormatOptions, Formatter,
     GroupId, VecBuffer,
-    format::write,
     format_element::{
         self, LineMode, PrintMode, TextWidth,
         tag::{self, Condition, DedentMode, GroupMode, LabelId, Tag},
@@ -383,10 +382,12 @@ impl<'ast, C> Format<'ast, C> for Indent<'_, 'ast, C> {
     fn fmt(&self, f: &mut Formatter<'_, 'ast, C>) {
         f.write_element(FormatElement::Tag(StartIndent));
 
+        #[cfg(debug_assertions)]
         let elements_length = f.elements().len();
 
         Arguments::from(&self.content).fmt(f);
 
+        #[cfg(debug_assertions)]
         debug_assert_ne!(
             elements_length,
             f.elements().len(),
@@ -546,25 +547,18 @@ impl<'ast, C> Format<'ast, C> for BlockIndent<'_, 'ast, C> {
     fn fmt(&self, f: &mut Formatter<'_, 'ast, C>) {
         f.write_element(FormatElement::Tag(StartIndent));
 
-        match self.mode {
-            IndentMode::Soft => {
-                let line = soft_line_break();
-                write(f, Arguments::new(&[Argument::new(&line)]));
-            }
-            IndentMode::Block => {
-                let line = hard_line_break();
-                write(f, Arguments::new(&[Argument::new(&line)]));
-            }
-            IndentMode::SoftLineOrSpace | IndentMode::SoftSpace => {
-                let line = soft_line_break_or_space();
-                write(f, Arguments::new(&[Argument::new(&line)]));
-            }
-        }
+        f.write_element(FormatElement::Line(match self.mode {
+            IndentMode::Soft => LineMode::Soft,
+            IndentMode::Block => LineMode::Hard,
+            IndentMode::SoftLineOrSpace | IndentMode::SoftSpace => LineMode::SoftOrSpace,
+        }));
 
+        #[cfg(debug_assertions)]
         let elements_length = f.elements().len();
 
         Arguments::from(&self.content).fmt(f);
 
+        #[cfg(debug_assertions)]
         debug_assert_ne!(
             elements_length,
             f.elements().len(),
@@ -574,18 +568,9 @@ impl<'ast, C> Format<'ast, C> for BlockIndent<'_, 'ast, C> {
         f.write_element(FormatElement::Tag(EndIndent));
 
         match self.mode {
-            IndentMode::Soft => {
-                let line = soft_line_break();
-                write(f, Arguments::new(&[Argument::new(&line)]));
-            }
-            IndentMode::Block => {
-                let line = hard_line_break();
-                write(f, Arguments::new(&[Argument::new(&line)]));
-            }
-            IndentMode::SoftSpace => {
-                let line = soft_line_break_or_space();
-                write(f, Arguments::new(&[Argument::new(&line)]));
-            }
+            IndentMode::Soft => f.write_element(FormatElement::Line(LineMode::Soft)),
+            IndentMode::Block => f.write_element(FormatElement::Line(LineMode::Hard)),
+            IndentMode::SoftSpace => f.write_element(FormatElement::Line(LineMode::SoftOrSpace)),
             IndentMode::SoftLineOrSpace => (),
         }
     }
