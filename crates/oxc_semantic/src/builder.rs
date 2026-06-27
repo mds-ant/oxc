@@ -126,6 +126,15 @@ pub struct SemanticBuilder<'a> {
     ast_node_records: Vec<NodeId>,
 }
 
+/// How strictly to check pre-allocation `Stats` against the actual counts after a build.
+#[cfg_attr(not(debug_assertions), expect(dead_code))]
+enum StatsCheck {
+    /// Self-counted via [`Stats::count`]: nodes/scopes/references must match exactly.
+    Accurate(Stats),
+    /// Caller-provided: every field must be `>=` actual (over-estimate is fine).
+    Sufficient(Stats),
+}
+
 /// Data returned by [`SemanticBuilder::build`].
 pub struct SemanticBuilderReturn<'a> {
     /// Built semantic model.
@@ -328,11 +337,11 @@ impl<'a> SemanticBuilder<'a> {
         // If user did not provide existing `Stats`, calculate them by visiting AST.
         #[cfg_attr(not(debug_assertions), expect(unused_variables))]
         let (stats, check_stats) = if let Some(stats) = self.stats {
-            (stats, None)
+            (stats, StatsCheck::Sufficient(stats))
         } else {
             let stats = Stats::count(program);
             let stats_with_excess = stats.increase_by(self.excess_capacity);
-            (stats_with_excess, Some(stats))
+            (stats_with_excess, StatsCheck::Accurate(stats))
         };
         self.node_store.reserve(stats.nodes as usize);
         self.scoping.reserve(
@@ -349,7 +358,7 @@ impl<'a> SemanticBuilder<'a> {
 
         // Check that estimated counts accurately (unless in release mode)
         #[cfg(debug_assertions)]
-        if let Some(stats) = check_stats {
+        {
             #[expect(clippy::cast_possible_truncation)]
             let actual_stats = Stats::new(
                 // `node_count` is the source of truth, valid even when the full
@@ -359,7 +368,10 @@ impl<'a> SemanticBuilder<'a> {
                 self.scoping.symbols_len() as u32,
                 self.scoping.references.len() as u32,
             );
-            stats.assert_accurate(actual_stats);
+            match check_stats {
+                StatsCheck::Accurate(stats) => stats.assert_accurate(actual_stats),
+                StatsCheck::Sufficient(stats) => stats.assert_sufficient(actual_stats),
+            }
         }
 
         // Root unresolved references are already populated by `resolve_all_references()`

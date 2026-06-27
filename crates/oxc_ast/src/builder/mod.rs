@@ -98,6 +98,8 @@
 use oxc_allocator::{Allocator, ArenaBox, FromIn, GetAllocator};
 use oxc_syntax::node::NodeId;
 
+pub use crate::node_counts::{AstNodeCounter, AstNodeCounts};
+
 mod custom;
 
 #[cfg(not(feature = "disable_old_builder"))]
@@ -112,13 +114,29 @@ mod methods;
 /// builder directly, or with a type which exposes one by implementing [`GetAstBuilder`]
 /// (e.g. parser or traverse context).
 ///
-/// Further [`AstBuild`] implementations will be added later:
+/// Further [`AstBuild`] implementations:
 ///
-/// * Version for parser which counts AST nodes (to accurately pre-allocate `Vec`s in `SemanticBuilder`).
-/// * Version for transformer/minifier which assigns unique [`NodeId`]s to all AST nodes.
+/// * [`CountingAstBuilder`] for the parser, which counts AST nodes (to accurately pre-allocate
+///   `Vec`s in `SemanticBuilder`).
+/// * Version for transformer/minifier which assigns unique [`NodeId`]s to all AST nodes (planned).
 pub trait AstBuild<'a>: GetAllocator<'a> {
     /// Get [`NodeId`] to assign to an AST node.
+    ///
+    /// Called exactly once per visitable AST struct constructed via the generated builder methods.
     fn node_id(&self) -> NodeId;
+
+    /// Record that a `#[scope]`-bearing node was constructed. Default no-op.
+    #[inline]
+    fn count_scope(&self) {}
+
+    /// Record that a symbol-declaring node (`BindingIdentifier`, `TSEnumMember`) was constructed.
+    /// Default no-op.
+    #[inline]
+    fn count_symbol(&self) {}
+
+    /// Record that an `IdentifierReference` was constructed. Default no-op.
+    #[inline]
+    fn count_reference(&self) {}
 }
 
 /// Trait for types which provide access to an [`AstBuild`]er.
@@ -177,6 +195,64 @@ impl<'a> AstBuild<'a> for AstBuilder<'a> {
 
 /// [`AstBuilder`] implements [`GetAstBuilder`] so it can be passed directly to AST build methods.
 impl<'a> GetAstBuilder<'a> for AstBuilder<'a> {
+    type Builder = Self;
+
+    #[inline]
+    fn builder(&self) -> &Self {
+        self
+    }
+}
+
+/// AST builder which assigns dummy [`NodeId`]s and counts node / scope / symbol / reference
+/// constructions.
+///
+/// Used by the parser to produce `oxc_semantic::Stats` as a side effect of parsing, so
+/// `SemanticBuilder` can size its stores without a separate counting traversal.
+pub struct CountingAstBuilder<'a> {
+    allocator: &'a Allocator,
+    /// Running totals; snapshotted/restored at every speculative-parse checkpoint.
+    pub counter: AstNodeCounter,
+}
+
+impl<'a> CountingAstBuilder<'a> {
+    /// Create a new [`CountingAstBuilder`] that will allocate AST types in the provided [`Allocator`].
+    #[inline]
+    pub fn new(allocator: &'a Allocator) -> Self {
+        Self { allocator, counter: AstNodeCounter::default() }
+    }
+}
+
+impl<'a> GetAllocator<'a> for CountingAstBuilder<'a> {
+    #[inline]
+    fn allocator(&self) -> &'a Allocator {
+        self.allocator
+    }
+}
+
+impl<'a> AstBuild<'a> for CountingAstBuilder<'a> {
+    #[inline]
+    fn node_id(&self) -> NodeId {
+        self.counter.inc_node();
+        NodeId::DUMMY
+    }
+
+    #[inline]
+    fn count_scope(&self) {
+        self.counter.inc_scope();
+    }
+
+    #[inline]
+    fn count_symbol(&self) {
+        self.counter.inc_symbol();
+    }
+
+    #[inline]
+    fn count_reference(&self) {
+        self.counter.inc_reference();
+    }
+}
+
+impl<'a> GetAstBuilder<'a> for CountingAstBuilder<'a> {
     type Builder = Self;
 
     #[inline]

@@ -854,8 +854,8 @@ impl<'a, C: Config> ParserImpl<'a, C> {
             self.bump_any();
             TSTypeName::new_this_expression(self.end_span(span), self)
         } else {
-            let ident = self.parse_identifier_name();
-            TSTypeName::new_identifier_reference(ident.span, ident.name, self)
+            let (span, name) = self.parse_identifier_name_parts();
+            TSTypeName::new_identifier_reference(span, name, self)
         };
         if self.at(Kind::Dot) { self.parse_ts_qualified_type_name(span, left) } else { left }
     }
@@ -1176,8 +1176,8 @@ impl<'a, C: Config> ParserImpl<'a, C> {
 
     fn parse_ts_import_type_qualifier(&mut self) -> TSImportTypeQualifier<'a> {
         let span = self.start_span();
-        let ident = self.parse_identifier_name();
-        let mut left = TSImportTypeQualifier::new_identifier(ident.span, ident.name, self);
+        let (ident_span, name) = self.parse_identifier_name_parts();
+        let mut left = TSImportTypeQualifier::new_identifier(ident_span, name, self);
 
         while self.eat(Kind::Dot) {
             let right = self.parse_identifier_name();
@@ -1590,7 +1590,7 @@ impl<'a, C: Config> ParserImpl<'a, C> {
 
     fn parse_ts_index_signature_name(&mut self) -> TSIndexSignatureName<'a> {
         let span = self.start_span();
-        let name = self.parse_identifier_name().name;
+        let (_, name) = self.parse_identifier_name_parts();
         if self.at(Kind::Question) {
             self.error(diagnostics::index_signature_question_mark(self.cur_token().span()));
             self.bump_any();

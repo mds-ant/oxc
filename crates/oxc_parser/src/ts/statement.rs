@@ -745,8 +745,8 @@ impl<'a, C: Config> ParserImpl<'a, C> {
             return TSModuleReference::IdentifierReference(ident);
         }
 
-        let ident = self.parse_identifier_name();
-        let left = TSTypeName::new_identifier_reference(ident.span, ident.name, self);
+        let (ident_span, name) = self.parse_identifier_name_parts();
+        let left = TSTypeName::new_identifier_reference(ident_span, name, self);
 
         // Parse qualified name: foo.bar.baz
         let type_name =

@@ -75,6 +75,18 @@ pub struct Stats {
     pub references: u32,
 }
 
+impl From<oxc_ast::builder::AstNodeCounts> for Stats {
+    #[inline]
+    fn from(counts: oxc_ast::builder::AstNodeCounts) -> Self {
+        Self {
+            nodes: counts.nodes,
+            scopes: counts.scopes,
+            symbols: counts.symbols,
+            references: counts.references,
+        }
+    }
+}
+
 impl Stats {
     /// Create new [`Stats`] from specified counts.
     pub fn new(nodes: u32, scopes: u32, symbols: u32, references: u32) -> Self {
@@ -133,6 +145,23 @@ impl Stats {
         // This is not a big problem - allocating a `Vec` with excess capacity is cheap.
         // It's allocating with *not enough* capacity which is costly, as then the `Vec`
         // will grow and reallocate.
+        assert_ge!(self.symbols, actual.symbols, "symbols count mismatch");
+    }
+
+    /// Assert that estimated [`Stats`] are at least as large as actual.
+    ///
+    /// Caller-provided stats (e.g. from the parser) may be a small over-estimate
+    /// for `nodes` / `scopes` / `references` (e.g. nodes constructed and then dropped
+    /// during cover-grammar conversion or error recovery). Under-estimates would cause
+    /// the pre-allocated `Vec`s to grow, which is the expensive case this whole
+    /// machinery exists to avoid.
+    ///
+    /// # Panics
+    /// Panics if any provided count is below the actual count.
+    pub fn assert_sufficient(self, actual: Self) {
+        assert_ge!(self.nodes, actual.nodes, "nodes count mismatch");
+        assert_ge!(self.scopes, actual.scopes, "scopes count mismatch");
+        assert_ge!(self.references, actual.references, "references count mismatch");
         assert_ge!(self.symbols, actual.symbols, "symbols count mismatch");
     }
 }

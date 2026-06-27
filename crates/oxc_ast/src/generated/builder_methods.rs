@@ -39,6 +39,7 @@ impl<'a> Program<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         Program {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -76,6 +77,7 @@ impl<'a> Program<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         Program {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -1371,6 +1373,7 @@ impl<'a> IdentifierReference<'a> {
         S1: Into<Ident<'a>>,
     {
         let builder = builder.builder();
+        builder.count_reference();
         IdentifierReference {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -1415,6 +1418,7 @@ impl<'a> IdentifierReference<'a> {
         S1: Into<Ident<'a>>,
     {
         let builder = builder.builder();
+        builder.count_reference();
         IdentifierReference {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -1464,6 +1468,7 @@ impl<'a> BindingIdentifier<'a> {
         S1: Into<Ident<'a>>,
     {
         let builder = builder.builder();
+        builder.count_symbol();
         BindingIdentifier {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -1508,6 +1513,7 @@ impl<'a> BindingIdentifier<'a> {
         S1: Into<Ident<'a>>,
     {
         let builder = builder.builder();
+        builder.count_symbol();
         BindingIdentifier {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -9164,6 +9170,7 @@ impl<'a> BlockStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         BlockStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -9206,6 +9213,7 @@ impl<'a> BlockStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         BlockStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -10084,6 +10092,7 @@ impl<'a> ForStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         ForStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -10141,6 +10150,7 @@ impl<'a> ForStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         ForStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -11458,6 +11468,7 @@ impl<'a> ForInStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         ForInStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -11510,6 +11521,7 @@ impl<'a> ForInStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         ForInStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -11825,6 +11837,7 @@ impl<'a> ForOfStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         ForOfStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -11882,6 +11895,7 @@ impl<'a> ForOfStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         ForOfStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -12051,6 +12065,7 @@ impl<'a> WithStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         WithStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -12098,6 +12113,7 @@ impl<'a> WithStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         WithStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -12150,6 +12166,7 @@ impl<'a> SwitchStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         SwitchStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -12197,6 +12214,7 @@ impl<'a> SwitchStatement<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         SwitchStatement {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -12406,6 +12424,7 @@ impl<'a> CatchClause<'a> {
         T1: IntoIn<'a, ArenaBox<'a, BlockStatement<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         CatchClause {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -12459,6 +12478,7 @@ impl<'a> CatchClause<'a> {
         T1: IntoIn<'a, ArenaBox<'a, BlockStatement<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         CatchClause {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -12907,6 +12927,7 @@ impl<'a> Function<'a> {
         T5: IntoIn<'a, Option<ArenaBox<'a, FunctionBody<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         Function {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -13030,6 +13051,7 @@ impl<'a> Function<'a> {
         T5: IntoIn<'a, Option<ArenaBox<'a, FunctionBody<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         Function {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -13353,6 +13375,7 @@ impl<'a> ArrowFunctionExpression<'a> {
         T4: IntoIn<'a, ArenaBox<'a, FunctionBody<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         ArrowFunctionExpression {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -13450,6 +13473,7 @@ impl<'a> ArrowFunctionExpression<'a> {
         T4: IntoIn<'a, ArenaBox<'a, FunctionBody<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         ArrowFunctionExpression {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -13600,6 +13624,7 @@ impl<'a> Class<'a> {
         T3: IntoIn<'a, ArenaBox<'a, ClassBody<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         Class {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -13713,6 +13738,7 @@ impl<'a> Class<'a> {
         T3: IntoIn<'a, ArenaBox<'a, ClassBody<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         Class {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -14339,6 +14365,7 @@ impl<'a> StaticBlock<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         StaticBlock {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -14381,6 +14408,7 @@ impl<'a> StaticBlock<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         StaticBlock {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -19687,6 +19715,7 @@ impl<'a> TSEnumBody<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSEnumBody {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -19709,6 +19738,7 @@ impl<'a> TSEnumBody<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSEnumBody {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -19733,6 +19763,7 @@ impl<'a> TSEnumMember<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_symbol();
         TSEnumMember { node_id: Cell::new(builder.node_id()), span, id, initializer }
     }
 }
@@ -20909,6 +20940,7 @@ impl<'a> TSConditionalType<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSConditionalType {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -20969,6 +21001,7 @@ impl<'a> TSConditionalType<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSConditionalType {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -22946,6 +22979,7 @@ impl<'a> TSTypeAliasDeclaration<'a> {
         T1: IntoIn<'a, Option<ArenaBox<'a, TSTypeParameterDeclaration<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSTypeAliasDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -23012,6 +23046,7 @@ impl<'a> TSTypeAliasDeclaration<'a> {
         T1: IntoIn<'a, Option<ArenaBox<'a, TSTypeParameterDeclaration<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSTypeAliasDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -23118,6 +23153,7 @@ impl<'a> TSInterfaceDeclaration<'a> {
         T2: IntoIn<'a, ArenaBox<'a, TSInterfaceBody<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSInterfaceDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -23191,6 +23227,7 @@ impl<'a> TSInterfaceDeclaration<'a> {
         T2: IntoIn<'a, ArenaBox<'a, TSInterfaceBody<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSInterfaceDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -23751,6 +23788,7 @@ impl<'a> TSCallSignatureDeclaration<'a> {
         T4: IntoIn<'a, Option<ArenaBox<'a, TSTypeAnnotation<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSCallSignatureDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -23823,6 +23861,7 @@ impl<'a> TSCallSignatureDeclaration<'a> {
         T4: IntoIn<'a, Option<ArenaBox<'a, TSTypeAnnotation<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSCallSignatureDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -23913,6 +23952,7 @@ impl<'a> TSMethodSignature<'a> {
         T4: IntoIn<'a, Option<ArenaBox<'a, TSTypeAnnotation<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSMethodSignature {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -24016,6 +24056,7 @@ impl<'a> TSMethodSignature<'a> {
         T4: IntoIn<'a, Option<ArenaBox<'a, TSTypeAnnotation<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSMethodSignature {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -24111,6 +24152,7 @@ impl<'a> TSConstructSignatureDeclaration<'a> {
         T3: IntoIn<'a, Option<ArenaBox<'a, TSTypeAnnotation<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSConstructSignatureDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -24176,6 +24218,7 @@ impl<'a> TSConstructSignatureDeclaration<'a> {
         T3: IntoIn<'a, Option<ArenaBox<'a, TSTypeAnnotation<'a>>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSConstructSignatureDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -24383,6 +24426,7 @@ impl<'a> TSModuleDeclaration<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSModuleDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -24440,6 +24484,7 @@ impl<'a> TSModuleDeclaration<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSModuleDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -24650,6 +24695,7 @@ impl<'a> TSGlobalDeclaration<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSGlobalDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -24702,6 +24748,7 @@ impl<'a> TSGlobalDeclaration<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSGlobalDeclaration {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -25192,6 +25239,7 @@ impl<'a> TSFunctionType<'a> {
         T4: IntoIn<'a, ArenaBox<'a, TSTypeAnnotation<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSFunctionType {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -25264,6 +25312,7 @@ impl<'a> TSFunctionType<'a> {
         T4: IntoIn<'a, ArenaBox<'a, TSTypeAnnotation<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSFunctionType {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -25345,6 +25394,7 @@ impl<'a> TSConstructorType<'a> {
         T3: IntoIn<'a, ArenaBox<'a, TSTypeAnnotation<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSConstructorType {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -25415,6 +25465,7 @@ impl<'a> TSConstructorType<'a> {
         T3: IntoIn<'a, ArenaBox<'a, TSTypeAnnotation<'a>>>,
     {
         let builder = builder.builder();
+        builder.count_scope();
         TSConstructorType {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -25494,6 +25545,7 @@ impl<'a> TSMappedType<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSMappedType {
             node_id: Cell::new(builder.node_id()),
             span,
@@ -25573,6 +25625,7 @@ impl<'a> TSMappedType<'a> {
         builder: &B,
     ) -> Self {
         let builder = builder.builder();
+        builder.count_scope();
         TSMappedType {
             node_id: Cell::new(builder.node_id()),
             span,

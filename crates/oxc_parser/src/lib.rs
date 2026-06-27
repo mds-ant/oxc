@@ -90,7 +90,7 @@ pub mod lexer;
 use oxc_allocator::{Allocator, ArenaBox, ArenaVec, Dummy, GetAllocator};
 use oxc_ast::{
     ast::{Expression, Program, Statement},
-    builder::{AstBuilder, GetAstBuilder},
+    builder::{AstNodeCounts, CountingAstBuilder, GetAstBuilder},
 };
 use oxc_diagnostics::{Diagnostics, OxcDiagnostic};
 use oxc_span::{SourceType, Span};
@@ -190,6 +190,13 @@ pub struct ParserReturn<'a> {
 
     /// Whether the file is [flow](https://flow.org).
     pub is_flow_language: bool,
+
+    /// Counts of visitable nodes / scopes / symbols / references constructed while parsing.
+    ///
+    /// These match (or are a small over-estimate of) what `oxc_semantic::Stats::count`
+    /// would compute, and can be passed to `oxc_semantic::SemanticBuilder::with_stats`
+    /// to skip its dedicated counting traversal.
+    pub stats: AstNodeCounts,
 }
 
 /// Parse options
@@ -621,7 +628,7 @@ struct ParserImpl<'a, C: ParserConfig> {
     ctx: Context,
 
     /// Ast builder for creating AST nodes
-    ast: AstBuilder<'a>,
+    ast: CountingAstBuilder<'a>,
 
     /// Module Record Builder
     module_record_builder: ModuleRecordBuilder<'a>,
@@ -657,7 +664,7 @@ impl<'a, C: ParserConfig> ParserImpl<'a, C> {
             prev_token_end: 0,
             state: ParserState::new(),
             ctx: Self::default_context(source_type, options),
-            ast: AstBuilder::new(allocator),
+            ast: CountingAstBuilder::new(allocator),
             module_record_builder: ModuleRecordBuilder::new(allocator, source_type),
             is_ts: source_type.is_typescript(),
         }
@@ -735,6 +742,8 @@ impl<'a, C: ParserConfig> ParserImpl<'a, C> {
 
         program.comments = self.lexer.trivia_builder.comments;
 
+        let stats = self.ast.counter.counts();
+
         ParserReturn {
             program,
             module_record,
@@ -743,6 +752,7 @@ impl<'a, C: ParserConfig> ParserImpl<'a, C> {
             tokens,
             panicked,
             is_flow_language,
+            stats,
         }
     }
 
@@ -811,8 +821,14 @@ impl<'a, C: ParserConfig> ParserImpl<'a, C> {
 
         let checkpoints = std::mem::take(&mut self.state.potential_await_reparse);
         for (stmt_index, checkpoint) in checkpoints {
+            // `rewind` rolls AST node counts back to the checkpoint, but we keep every
+            // statement after `stmt_index` from the first pass; preserve their counts so
+            // `ParserReturn::stats` does not under-count. The first-pass version of the
+            // re-parsed statement stays counted too (a small, safe over-estimate).
+            let counts = self.ast.counter.counts();
             // Rewind to the checkpoint
             self.rewind(checkpoint);
+            self.ast.counter.restore(counts);
 
             // Parse the statement with await context enabled (TopLevel context is already set)
             let stmt = self.context_add(Context::Await, |p| {
@@ -895,10 +911,10 @@ impl<'a, C: ParserConfig> GetAllocator<'a> for ParserImpl<'a, C> {
 }
 
 impl<'a, C: ParserConfig> GetAstBuilder<'a> for ParserImpl<'a, C> {
-    type Builder = AstBuilder<'a>;
+    type Builder = CountingAstBuilder<'a>;
 
     #[inline]
-    fn builder(&self) -> &AstBuilder<'a> {
+    fn builder(&self) -> &CountingAstBuilder<'a> {
         &self.ast
     }
 }

@@ -17,6 +17,7 @@ pub struct ParserCheckpoint<'a> {
     cur_token: Token,
     prev_span_end: u32,
     errors_pos: usize,
+    counts: oxc_ast::builder::AstNodeCounts,
     fatal_error: Option<FatalError>,
 }
 
@@ -308,6 +309,7 @@ impl<'a, C: Config> ParserImpl<'a, C> {
             cur_token: self.token,
             prev_span_end: self.prev_token_end,
             errors_pos: self.errors.len(),
+            counts: self.ast.counter.counts(),
             fatal_error: self.fatal_error.take(),
         }
     }
@@ -318,18 +320,20 @@ impl<'a, C: Config> ParserImpl<'a, C> {
             cur_token: self.token,
             prev_span_end: self.prev_token_end,
             errors_pos: self.errors.len(),
+            counts: self.ast.counter.counts(),
             fatal_error: self.fatal_error.take(),
         }
     }
 
     pub(crate) fn rewind(&mut self, checkpoint: ParserCheckpoint<'a>) {
-        let ParserCheckpoint { lexer, cur_token, prev_span_end, errors_pos, fatal_error } =
+        let ParserCheckpoint { lexer, cur_token, prev_span_end, errors_pos, counts, fatal_error } =
             checkpoint;
 
         self.lexer.rewind(lexer);
         self.token = cur_token;
         self.prev_token_end = prev_span_end;
         self.errors.truncate(errors_pos);
+        self.ast.counter.restore(counts);
         self.fatal_error = fatal_error;
     }
 

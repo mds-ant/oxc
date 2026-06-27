@@ -947,9 +947,11 @@ impl<'a, C: Config> ParserImpl<'a, C> {
                     ));
                 }
 
+                let imported =
+                    property_name.unwrap_or_else(|| self.clone_module_export_name(&name));
                 ImportOrExportSpecifier::Import(ImportSpecifier::new(
                     self.end_span(specifier_span),
-                    property_name.unwrap_or_else(|| name.clone()),
+                    imported,
                     BindingIdentifier::new(name.span(), name.name(), self),
                     kind,
                     self,
@@ -965,7 +967,7 @@ impl<'a, C: Config> ParserImpl<'a, C> {
 
                 let exported = match property_name {
                     Some(property_name) => property_name,
-                    None => name.clone(),
+                    None => self.clone_module_export_name(&name),
                 };
                 ImportOrExportSpecifier::Export(ExportSpecifier::new(
                     self.end_span(specifier_span),
@@ -1052,6 +1054,17 @@ impl<'a, C: Config> ParserImpl<'a, C> {
 
     fn can_parse_module_export_name(&self) -> bool {
         self.cur_kind().is_identifier_name() || self.at(Kind::Str)
+    }
+
+    /// `ModuleExportName::clone` that also bumps the AST node counter.
+    ///
+    /// `#[derive(Clone)]` on `ModuleExportName` bypasses the generated `AstBuilder`
+    /// constructors, so the inner node it duplicates is not otherwise counted; this
+    /// keeps `ParserReturn::stats` from under-counting nodes for shorthand
+    /// import/export specifiers.
+    fn clone_module_export_name(&self, name: &ModuleExportName<'a>) -> ModuleExportName<'a> {
+        self.ast.counter.inc_node();
+        name.clone()
     }
 }
 

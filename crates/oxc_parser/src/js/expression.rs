@@ -104,11 +104,19 @@ impl<'a, C: Config> ParserImpl<'a, C> {
     }
 
     pub(crate) fn parse_identifier_name(&mut self) -> IdentifierName<'a> {
-        if !self.cur_kind().is_identifier_name() {
-            return self.unexpected();
-        }
-        let (span, name) = self.parse_identifier_kind(Kind::Ident);
+        let (span, name) = self.parse_identifier_name_parts();
         IdentifierName::new(span, name, self)
+    }
+
+    /// [`parse_identifier_name`](Self::parse_identifier_name) without constructing the
+    /// `IdentifierName` node. For call sites that immediately re-wrap the span/name into
+    /// a different node type.
+    pub(crate) fn parse_identifier_name_parts(&mut self) -> (Span, Ident<'a>) {
+        if !self.cur_kind().is_identifier_name() {
+            self.set_unexpected();
+            return (Span::default(), Ident::from(""));
+        }
+        self.parse_identifier_kind(Kind::Ident)
     }
 
     /// Parse keyword kind as identifier

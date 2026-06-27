@@ -45,6 +45,7 @@ pub mod ast;
 mod ast_impl;
 mod ast_kind_impl;
 pub mod builder;
+mod node_counts;
 pub mod precedence;
 mod trivia;
 

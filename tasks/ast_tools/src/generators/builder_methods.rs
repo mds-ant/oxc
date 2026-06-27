@@ -229,6 +229,8 @@ fn generate_builder_methods_for_struct_impl(
 
     let params_docs = generate_doc_comment_for_params(params);
 
+    let count_stmts = generate_count_stmts(struct_def);
+
     let new_method = quote! {
         ///@@line_break
         #fn_docs
@@ -236,6 +238,7 @@ fn generate_builder_methods_for_struct_impl(
         #[inline]
         pub fn #new_fn_name #generic_params (#fn_params, builder: &B) -> Self #where_clause {
             let builder = builder.builder();
+            #count_stmts
             #struct_ident { #fields }
         }
     };
@@ -570,6 +573,42 @@ fn generate_builder_method_for_enum_variant_impl(
             Self::#variant_ident(#struct_ident::#inner_fn_name(#(#args),*, builder))
         }
     }
+}
+
+/// Generate `builder.count_*()` calls for a struct constructor body.
+///
+/// Mirrors what `oxc_semantic::Stats::count` would observe for this node.
+/// `nodes` is already counted via `AstBuild::node_id()`, so only the three
+/// auxiliary counters are emitted here:
+///
+/// * `+1 scope` for every struct with a `#[scope]` attribute
+/// * `+1 symbol` for `BindingIdentifier` and `TSEnumMember`
+/// * `+1 reference` for `IdentifierReference`
+///
+/// All `boxed` and enum-variant builder methods delegate to `Self::new`, so
+/// emitting the calls here covers every construction path.
+fn generate_count_stmts(struct_def: &StructDef) -> TokenStream {
+    if !struct_def.kind.has_kind {
+        return quote!();
+    }
+
+    let mut stmts = quote!();
+
+    if struct_def.visit.scope.is_some() {
+        stmts.extend(quote!(builder.count_scope();));
+    }
+
+    match struct_def.name() {
+        "BindingIdentifier" | "TSEnumMember" => {
+            stmts.extend(quote!(builder.count_symbol();));
+        }
+        "IdentifierReference" => {
+            stmts.extend(quote!(builder.count_reference();));
+        }
+        _ => {}
+    }
+
+    stmts
 }
 
 /// Wrap the value of a default field in `Cell::new(...)` or `Some(...)` if necessary.
