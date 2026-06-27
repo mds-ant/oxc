@@ -243,6 +243,38 @@ mod test {
     }
 
     #[test]
+    fn test_parse_astro_real_script_after_closed_comment_with_fake_script() {
+        // The last `<!--` before the real `<script>` is closed, so the real one must be found.
+        let source_text = "<!-- <script>nope</script> --> <p/> <script>yes</script>";
+
+        let sources = parse_astro(source_text);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_text, "yes");
+    }
+
+    #[test]
+    fn test_parse_astro_script_inside_unclosed_comment_is_not_found() {
+        // The only `<script>` sits inside a comment that never closes.
+        let source_text = "<p>x</p>\n<!--\n<script>nope</script>\n";
+
+        let sources = parse_astro(source_text);
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn test_parse_astro_frontmatter_then_commented_script() {
+        // The script search starts at the end of the frontmatter;
+        // the comment after it must still be classified correctly.
+        let source_text =
+            "---\nconst a = 1;\n---\n<!-- <script>nope</script> -->\n<script>yes</script>\n";
+
+        let sources = parse_astro(source_text);
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].source_text.trim(), "const a = 1;");
+        assert_eq!(sources[1].source_text, "yes");
+    }
+
+    #[test]
     fn test_parse_astro_with_inline_script_self_closing() {
         let source_text = r#"
         <h1>Welcome, world!</h1>

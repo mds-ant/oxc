@@ -325,6 +325,54 @@ mod test {
     }
 
     #[test]
+    fn test_parse_svelte_real_script_after_closed_comment_with_fake_script() {
+        // The last `<!--` before the real `<script>` is closed, so the real one must be found.
+        let source_text = "<!-- <script>nope</script> --> <p/> <script>yes</script>";
+
+        let sources = SveltePartialLoader::new(source_text).parse();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_text, "yes");
+    }
+
+    #[test]
+    fn test_parse_svelte_script_inside_unclosed_comment_is_not_found() {
+        // The only `<script>` sits inside a comment that never closes.
+        let source_text = "<p>x</p>\n<!--\n<script>nope</script>\n";
+
+        let sources = SveltePartialLoader::new(source_text).parse();
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn test_parse_svelte_real_script_before_unclosed_comment() {
+        // An unclosed `<!--` after the real `<script>` must not affect it, and the
+        // commented-out `<script module>` after it must not be returned.
+        let source_text = "<script>real</script>\n<!--\n<script module>nope</script>\n";
+
+        let sources = SveltePartialLoader::new(source_text).parse();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_text, "real");
+    }
+
+    #[test]
+    fn test_parse_svelte_comments_among_many_script_like_tags() {
+        // Mix `<script-` prefixed custom element tags with commented-out `<script>` blocks.
+        let filler = "<script-widget>noop</script-widget>\n".repeat(50);
+        let mut source_text = String::new();
+        source_text.push_str(&filler);
+        source_text.push_str("<!-- <script>nope</script> -->\n");
+        source_text.push_str(&filler);
+        source_text.push_str("<!--\n<script>also nope</script>\n-->\n");
+        source_text.push_str(&filler);
+        source_text.push_str("<script>real</script>\n");
+        source_text.push_str(&filler);
+
+        let sources = SveltePartialLoader::new(&source_text).parse();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_text, "real");
+    }
+
+    #[test]
     fn test_parse_svelte_script_with_callback_attribute() {
         let source_text = r#"<script>
 let browser = true;

@@ -316,6 +316,54 @@ mod test {
     }
 
     #[test]
+    fn test_parse_vue_real_script_after_closed_comment_with_fake_script() {
+        // The last `<!--` before the real `<script>` is closed, so the real one must be found.
+        let source_text = "<!-- <script>nope</script> --> <p/> <script>yes</script>";
+
+        let sources = VuePartialLoader::new(source_text).parse();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_text, "yes");
+    }
+
+    #[test]
+    fn test_parse_vue_script_inside_unclosed_comment_is_not_found() {
+        // The only `<script>` sits inside a comment that never closes.
+        let source_text = "<p>x</p>\n<!--\n<script>nope</script>\n";
+
+        let sources = VuePartialLoader::new(source_text).parse();
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn test_parse_vue_real_script_before_unclosed_comment() {
+        // An unclosed `<!--` after the real `<script>` must not affect it, and the
+        // commented-out `<script setup>` after it must not be returned.
+        let source_text = "<script>real</script>\n<!--\n<script setup>nope</script>\n";
+
+        let sources = VuePartialLoader::new(source_text).parse();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_text, "real");
+    }
+
+    #[test]
+    fn test_parse_vue_comments_among_many_script_like_tags() {
+        // Mix `<script-` prefixed custom element tags with commented-out `<script>` blocks.
+        let filler = "<script-widget>noop</script-widget>\n".repeat(50);
+        let mut source_text = String::new();
+        source_text.push_str(&filler);
+        source_text.push_str("<!-- <script>nope</script> -->\n");
+        source_text.push_str(&filler);
+        source_text.push_str("<!--\n<script>also nope</script>\n-->\n");
+        source_text.push_str(&filler);
+        source_text.push_str("<script>real</script>\n");
+        source_text.push_str(&filler);
+
+        let sources = VuePartialLoader::new(&source_text).parse();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_text, "real");
+    }
+
+    #[test]
     #[expect(clippy::type_complexity)]
     fn lang() {
         // Test cases: (source_text, expected_is_typescript, expected_is_jsx, expected_is_module)
