@@ -39,6 +39,10 @@ name = "linter"
 harness = false
 
 [[bench]]
+name = "linter_partial_loader"
+harness = false
+
+[[bench]]
 name = "codegen"
 harness = false
 

@@ -23,6 +23,7 @@ const ALL_COMPONENTS = [
   "pipeline",
   "react_compiler",
   "linter",
+  "linter_partial_loader",
 ];
 
 // Files that when changed affect all benchmarks
@@ -59,7 +60,7 @@ function checkGlobalChanges(changedFiles) {
  * @returns {string} Feature name
  */
 function getFeatureForComponent(component) {
-  if (component === "linter") {
+  if (component === "linter" || component === "linter_partial_loader") {
     return "linter";
   }
   if (component === "react_compiler") {
