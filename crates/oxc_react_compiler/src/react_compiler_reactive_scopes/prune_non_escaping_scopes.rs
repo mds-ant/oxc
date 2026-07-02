@@ -70,10 +70,10 @@ pub fn prune_non_escaping_scopes<'a>(
     let visitor = CollectDependenciesVisitor::new(env);
     let mut visitor_state = (state, Vec::<ScopeId>::new());
     visit_reactive_function(func, &visitor, &mut visitor_state);
-    let (state, _) = visitor_state;
+    let (mut state, _) = visitor_state;
 
     // Then walk outward from the returned values and find all captured operands.
-    let memoized = compute_memoized_identifiers(&state);
+    let memoized = compute_memoized_identifiers(&mut state);
 
     // Prune scopes that do not declare/reassign any escaping values
     let mut transform = PruneScopesTransform {
@@ -957,60 +957,37 @@ impl<'a, 'e> ReactiveFunctionVisitor<'a> for CollectDependenciesVisitor<'a, 'e> 
 // computeMemoizedIdentifiers
 // =============================================================================
 
-fn compute_memoized_identifiers(state: &CollectState) -> FxHashSet<DeclarationId> {
+fn compute_memoized_identifiers(state: &mut CollectState) -> FxHashSet<DeclarationId> {
     let mut memoized = FxHashSet::default();
 
-    // We need mutable access to the nodes, so we clone the state into mutable structures
-    let mut identifier_nodes: FxHashMap<
-        DeclarationId,
-        (MemoizationLevel, bool, FxIndexSet<DeclarationId>, FxIndexSet<ScopeId>, bool),
-    > = state
-        .identifiers
-        .iter()
-        .map(|(id, node)| {
-            (
-                *id,
-                (
-                    node.level,
-                    node.memoized,
-                    node.dependencies.clone(),
-                    node.scopes.clone(),
-                    node.seen,
-                ),
-            )
-        })
-        .collect();
-
-    let mut scope_nodes: FxHashMap<ScopeId, (Vec<DeclarationId>, bool)> = state
-        .scopes
-        .iter()
-        .map(|(id, node)| (*id, (node.dependencies.clone(), node.seen)))
-        .collect();
-
+    // The DFS marks nodes directly: `seen`/`memoized` start out false on every
+    // node and are only touched here, and the state is not read again after
+    // this pass, so no copy of the graph is needed.
     fn visit(
         id: DeclarationId,
         force_memoize: bool,
-        identifier_nodes: &mut FxHashMap<
-            DeclarationId,
-            (MemoizationLevel, bool, FxIndexSet<DeclarationId>, FxIndexSet<ScopeId>, bool),
-        >,
-        scope_nodes: &mut FxHashMap<ScopeId, (Vec<DeclarationId>, bool)>,
+        identifier_nodes: &mut FxHashMap<DeclarationId, IdentifierNode>,
+        scope_nodes: &mut FxHashMap<ScopeId, ScopeNode>,
         memoized: &mut FxHashSet<DeclarationId>,
     ) -> bool {
-        let Some(&(level, _, _, _, seen)) = identifier_nodes.get(&id) else {
+        let Some(node) = identifier_nodes.get(&id) else {
             return false;
         };
+        let (level, seen) = (node.level, node.seen);
         if seen {
-            return identifier_nodes.get(&id).unwrap().1;
+            return identifier_nodes.get(&id).unwrap().memoized;
         }
 
         // Mark as seen, temporarily mark as non-memoized
-        identifier_nodes.get_mut(&id).unwrap().4 = true; // seen = true
-        identifier_nodes.get_mut(&id).unwrap().1 = false; // memoized = false
+        {
+            let node = identifier_nodes.get_mut(&id).unwrap();
+            node.seen = true;
+            node.memoized = false;
+        }
 
         // Visit dependencies
         let deps: Vec<DeclarationId> =
-            identifier_nodes.get(&id).unwrap().2.iter().copied().collect();
+            identifier_nodes.get(&id).unwrap().dependencies.iter().copied().collect();
         let mut has_memoized_dependency = false;
         for dep in deps {
             let is_dep_memoized = visit(dep, false, identifier_nodes, scope_nodes, memoized);
@@ -1022,33 +999,30 @@ fn compute_memoized_identifiers(state: &CollectState) -> FxHashSet<DeclarationId
                 && (has_memoized_dependency || force_memoize))
             || (level == MemoizationLevel::Unmemoized && force_memoize)
         {
-            identifier_nodes.get_mut(&id).unwrap().1 = true; // memoized = true
+            identifier_nodes.get_mut(&id).unwrap().memoized = true;
             memoized.insert(id);
             let scopes: Vec<ScopeId> =
-                identifier_nodes.get(&id).unwrap().3.iter().copied().collect();
+                identifier_nodes.get(&id).unwrap().scopes.iter().copied().collect();
             for scope_id in scopes {
                 force_memoize_scope_dependencies(scope_id, identifier_nodes, scope_nodes, memoized);
             }
         }
-        identifier_nodes.get(&id).unwrap().1
+        identifier_nodes.get(&id).unwrap().memoized
     }
 
     fn force_memoize_scope_dependencies(
         id: ScopeId,
-        identifier_nodes: &mut FxHashMap<
-            DeclarationId,
-            (MemoizationLevel, bool, FxIndexSet<DeclarationId>, FxIndexSet<ScopeId>, bool),
-        >,
-        scope_nodes: &mut FxHashMap<ScopeId, (Vec<DeclarationId>, bool)>,
+        identifier_nodes: &mut FxHashMap<DeclarationId, IdentifierNode>,
+        scope_nodes: &mut FxHashMap<ScopeId, ScopeNode>,
         memoized: &mut FxHashSet<DeclarationId>,
     ) {
-        let seen = scope_nodes.get(&id).expect("Expected a node for all scopes").1;
+        let seen = scope_nodes.get(&id).expect("Expected a node for all scopes").seen;
         if seen {
             return;
         }
-        scope_nodes.get_mut(&id).unwrap().1 = true; // seen = true
+        scope_nodes.get_mut(&id).unwrap().seen = true;
 
-        let deps: Vec<DeclarationId> = scope_nodes.get(&id).unwrap().0.clone();
+        let deps: Vec<DeclarationId> = scope_nodes.get(&id).unwrap().dependencies.clone();
         for dep in deps {
             visit(dep, true, identifier_nodes, scope_nodes, memoized);
         }
@@ -1057,7 +1031,7 @@ fn compute_memoized_identifiers(state: &CollectState) -> FxHashSet<DeclarationId
     // Walk from the "roots" aka returned/escaping identifiers
     let escaping: Vec<DeclarationId> = state.escaping_values.iter().copied().collect();
     for value in escaping {
-        visit(value, false, &mut identifier_nodes, &mut scope_nodes, &mut memoized);
+        visit(value, false, &mut state.identifiers, &mut state.scopes, &mut memoized);
     }
 
     memoized
