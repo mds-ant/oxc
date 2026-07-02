@@ -1,4 +1,4 @@
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::react_compiler_diagnostics::CompilerDiagnostic;
 use crate::react_compiler_diagnostics::CompilerDiagnosticDetail;
@@ -340,6 +340,40 @@ fn lower_block_statement_inner<'a>(
     // Track which bindings have been "declared" (their declaration statement has been seen)
     let mut declared: FxHashSet<BindingId> = FxHashSet::default();
 
+    // Index the file-wide reference and scope maps once per block instead of
+    // rescanning them for every (statement, binding) pair below:
+    // - non-JSX, located references per hoistable binding, sorted by position
+    //   (ascending scan of a sorted slice yields the same minimum the previous
+    //   `min_by_key` found);
+    // - function-scope ranges sorted by start (consumed only existentially).
+    let hoistable_ids: FxHashSet<BindingId> = hoistable.iter().map(|b| b.0).collect();
+    let mut refs_by_binding: FxHashMap<BindingId, Vec<(u32, u32)>> = FxHashMap::default();
+    let mut function_scope_ranges: Vec<(u32, u32)> = Vec::new();
+    {
+        let scope_info = builder.scope_info();
+        for (&ref_nid, &ref_bid) in &scope_info.ref_node_id_to_binding {
+            if !hoistable_ids.contains(&ref_bid) {
+                continue;
+            }
+            let Some(entry) = builder.identifier_locs().get(&ref_nid) else { continue };
+            if entry.is_jsx {
+                continue;
+            }
+            refs_by_binding.entry(ref_bid).or_default().push((entry.start, ref_nid));
+        }
+        for refs in refs_by_binding.values_mut() {
+            refs.sort_by_key(|&(pos, _)| pos);
+        }
+        for (&pos, &sid) in &scope_info.node_to_scope {
+            if matches!(scope_info.scopes[sid.0 as usize].kind, ScopeKind::Function) {
+                if let Some(&end) = scope_info.node_to_scope_end.get(&pos) {
+                    function_scope_ranges.push((pos, end));
+                }
+            }
+        }
+        function_scope_ranges.sort_unstable_by_key(|&(pos, _)| pos);
+    }
+
     for body_stmt in statements {
         let stmt_start = statement_start(body_stmt).unwrap_or(0);
         let stmt_end = statement_end(body_stmt).unwrap_or(u32::MAX);
@@ -352,18 +386,11 @@ fn lower_block_statement_inner<'a>(
             // For function declarations, fnDepth starts at 1 (all refs are inside)
             vec![(stmt_start, stmt_end)]
         } else {
-            let scope_info = builder.scope_info();
-            scope_info
-                .node_to_scope
+            let lo = function_scope_ranges.partition_point(|&(pos, _)| pos <= stmt_start);
+            function_scope_ranges[lo..]
                 .iter()
-                .filter(|&(&pos, &sid)| {
-                    pos > stmt_start
-                        && pos < stmt_end
-                        && matches!(scope_info.scopes[sid.0 as usize].kind, ScopeKind::Function)
-                })
-                .filter_map(|(&pos, _)| {
-                    scope_info.node_to_scope_end.get(&pos).map(|&end| (pos, end))
-                })
+                .take_while(|&&(pos, _)| pos < stmt_end)
+                .copied()
                 .collect()
         };
 
@@ -397,51 +424,43 @@ fn lower_block_statement_inner<'a>(
             // since that's the only statement type where decl_start is a declaration, not
             // a reference.
             let apply_decl_filter = !matches!(kind, AstBindingKind::Hoisted) || is_function_decl;
-            let refs_in_stmt: Vec<(u32, u32)> = builder
-                .scope_info()
-                .ref_node_id_to_binding
-                .iter()
-                .filter_map(|(&ref_nid, &ref_bid)| {
-                    if ref_bid != *binding_id {
-                        return None;
-                    }
-                    let entry = builder.identifier_locs().get(&ref_nid)?;
-                    let ref_start = entry.start;
-                    if ref_start < stmt_start || ref_start >= stmt_end {
-                        return None;
-                    }
-                    if apply_decl_filter && *decl_node_id == Some(ref_nid) {
-                        return None;
-                    }
-                    if entry.is_jsx {
-                        return None;
-                    }
-                    Some((ref_start, ref_nid))
-                })
-                .collect();
+            let is_hoisted_kind = matches!(kind, AstBindingKind::Hoisted);
 
-            if refs_in_stmt.is_empty() {
-                continue;
+            // Scan this binding's (sorted, pre-filtered) references within the
+            // statement's range. The first passing entry is the minimum the old
+            // full-map scan selected; the first passing entry inside a nested
+            // function range likewise.
+            let Some(refs) = refs_by_binding.get(binding_id) else { continue };
+            let lo = refs.partition_point(|&(pos, _)| pos < stmt_start);
+            let mut first_ref: Option<(u32, u32)> = None;
+            let mut first_nested_ref: Option<(u32, u32)> = None;
+            for &(ref_pos, ref_nid) in refs[lo..].iter().take_while(|&&(pos, _)| pos < stmt_end) {
+                if apply_decl_filter && *decl_node_id == Some(ref_nid) {
+                    continue;
+                }
+                if first_ref.is_none() {
+                    first_ref = Some((ref_pos, ref_nid));
+                    // Hoisted-kind bindings only need the first reference.
+                    if is_hoisted_kind {
+                        break;
+                    }
+                }
+                if nested_function_ranges
+                    .iter()
+                    .any(|&(fn_start, fn_end)| ref_pos >= fn_start && ref_pos < fn_end)
+                {
+                    first_nested_ref = Some((ref_pos, ref_nid));
+                    break;
+                }
             }
 
-            let (first_ref_pos, first_ref_nid) =
-                *refs_in_stmt.iter().min_by_key(|(pos, _)| *pos).unwrap();
+            let Some((first_ref_pos, first_ref_nid)) = first_ref else { continue };
 
             // Hoist if: (1) binding is "hoisted" kind (function declaration), or
             // (2) any reference to this binding is inside a nested function scope.
             // Check per-reference rather than per-statement to correctly handle
             // statements that contain both nested functions and top-level code.
-            let is_hoisted_kind = matches!(kind, AstBindingKind::Hoisted);
-            let refs_in_nested_fn: Vec<(u32, u32)> = refs_in_stmt
-                .iter()
-                .copied()
-                .filter(|&(ref_pos, _)| {
-                    nested_function_ranges
-                        .iter()
-                        .any(|&(fn_start, fn_end)| ref_pos >= fn_start && ref_pos < fn_end)
-                })
-                .collect();
-            let should_hoist = is_hoisted_kind || !refs_in_nested_fn.is_empty();
+            let should_hoist = is_hoisted_kind || first_nested_ref.is_some();
             if should_hoist {
                 // Bindings pulled in from CHILD block scopes (the
                 // scope_bindings_with_children descent compensates for scope
@@ -465,7 +484,7 @@ fn lower_block_statement_inner<'a>(
                 let (hoist_ref_pos, hoist_ref_nid) = if is_hoisted_kind {
                     (first_ref_pos, first_ref_nid)
                 } else {
-                    *refs_in_nested_fn.iter().min_by_key(|(pos, _)| *pos).unwrap()
+                    first_nested_ref.unwrap()
                 };
                 will_hoist.push(HoistInfo {
                     binding_id: *binding_id,
