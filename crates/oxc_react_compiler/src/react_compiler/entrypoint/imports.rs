@@ -4,6 +4,8 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
+use std::rc::Rc;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::react_compiler_diagnostics::{CompilerError, CompilerErrorDetail, ErrorCategory};
@@ -30,7 +32,7 @@ pub struct NonLocalImportSpecifier {
 /// Equivalent to ProgramContext class in Imports.ts.
 pub struct ProgramContext {
     pub opts: PluginOptions,
-    pub code: Option<String>,
+    pub code: Option<Rc<str>>,
     pub react_runtime_module: String,
     pub suppressions: Vec<SuppressionRange>,
     pub has_module_scope_opt_out: bool,
@@ -60,7 +62,7 @@ pub struct ProgramContext {
 impl ProgramContext {
     pub fn new(
         opts: PluginOptions,
-        code: Option<String>,
+        code: Option<Rc<str>>,
         suppressions: Vec<SuppressionRange>,
         has_module_scope_opt_out: bool,
     ) -> Self {

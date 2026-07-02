@@ -26,6 +26,7 @@ use crate::react_compiler_diagnostics::ErrorCategory;
 use crate::react_compiler_hir::ReactFunctionType;
 use crate::react_compiler_hir::environment_config::EnvironmentConfig;
 use crate::react_compiler_lowering::FunctionNode;
+use crate::react_compiler_lowering::source_loc::LineOffsets;
 use crate::scope::ScopeId;
 use crate::scope::ScopeInfo;
 use oxc_allocator::GetAllocator;
@@ -1194,6 +1195,7 @@ fn try_compile_function<'a>(
     output_mode: CompilerOutputMode,
     env_config: &EnvironmentConfig,
     context: &mut ProgramContext,
+    line_offsets: &LineOffsets,
 ) -> Result<CodegenFunction<'a>, CompilerError> {
     // Check for suppressions that affect this function
     if let (Some(start), Some(end)) = (source.fn_start, source.fn_end) {
@@ -1219,6 +1221,7 @@ fn try_compile_function<'a>(
         output_mode,
         env_config,
         context,
+        line_offsets,
     )
 }
 
@@ -1234,6 +1237,7 @@ fn process_fn<'a>(
     output_mode: CompilerOutputMode,
     env_config: &EnvironmentConfig,
     context: &mut ProgramContext,
+    line_offsets: &LineOffsets,
 ) -> Result<Option<CodegenFunction<'a>>, CompileResult<'a>> {
     // Parse directives from the function body
     let opt_in_result =
@@ -1253,8 +1257,15 @@ fn process_fn<'a>(
     };
 
     // Attempt compilation
-    let compile_result =
-        try_compile_function(ast, source, scope_info, output_mode, env_config, context);
+    let compile_result = try_compile_function(
+        ast,
+        source,
+        scope_info,
+        output_mode,
+        env_config,
+        context,
+        line_offsets,
+    );
 
     match compile_result {
         Err(err) => {
@@ -2921,9 +2932,9 @@ pub fn compile_program<'a, 'p>(
     // Create program context
     let mut context = ProgramContext::new(
         options.clone(),
-        // Source text feeds the line-offset table (diagnostic line/col) and the fast
-        // refresh hash. The oxc front-end derives locations from it on demand.
-        Some(program.source_text.to_string()),
+        // Source text feeds snippet extraction in a few validations. Shared via
+        // `Rc` so per-function environments don't each copy the whole file.
+        Some(std::rc::Rc::from(program.source_text)),
         suppressions,
         has_module_scope_opt_out,
     );
@@ -2992,11 +3003,16 @@ pub fn compile_program<'a, 'p>(
     // while satisfying the borrow checker — compile_fn needs &mut context + &env_config)
     let env_config = options.environment.clone();
 
+    // The line-offset table only depends on the source text; build it once for
+    // all function compilations instead of rescanning the file per function.
+    let line_offsets = LineOffsets::new(program.source_text);
+
     // Process each function and collect compiled results
     let mut compiled_fns: Vec<CompiledFunction<'_, '_, '_>> = Vec::new();
 
     for source in &queue {
-        match process_fn(ast, source, &scope, output_mode, &env_config, &mut context) {
+        match process_fn(ast, source, &scope, output_mode, &env_config, &mut context, &line_offsets)
+        {
             Ok(Some(codegen_fn)) => {
                 compiled_fns.push(CompiledFunction { kind: source.kind, source, codegen_fn });
             }

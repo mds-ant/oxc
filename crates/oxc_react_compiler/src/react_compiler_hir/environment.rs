@@ -1,4 +1,5 @@
 use std::mem::take;
+use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
@@ -64,7 +65,7 @@ pub struct Environment<'a> {
     pub output_mode: OutputMode,
 
     // Source file code (for fast refresh hash computation)
-    pub code: Option<String>,
+    pub code: Option<Rc<str>>,
 
     // Pre-resolved import local names for instrumentation/hook guards.
     // Set by the program-level code before compilation.
