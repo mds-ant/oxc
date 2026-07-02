@@ -773,27 +773,28 @@ impl PropertyPathRegistry {
         parent_idx: usize,
         entry: &DependencyPathEntry,
     ) -> usize {
-        let map_key = entry.property.clone();
         let existing = if entry.optional {
-            self.nodes[parent_idx].optional_properties.get(&map_key).copied()
+            self.nodes[parent_idx].optional_properties.get(&entry.property).copied()
         } else {
-            self.nodes[parent_idx].properties.get(&map_key).copied()
+            self.nodes[parent_idx].properties.get(&entry.property).copied()
         };
         if let Some(idx) = existing {
             return idx;
         }
-        let parent_full_path = self.nodes[parent_idx].full_path.clone();
-        let parent_has_optional = self.nodes[parent_idx].has_optional;
-        let idx = self.nodes.len();
-        let mut new_path = parent_full_path.path.clone();
+        let parent = &self.nodes[parent_idx];
+        let parent_identifier = parent.full_path.identifier;
+        let parent_reactive = parent.full_path.reactive;
+        let parent_has_optional = parent.has_optional;
+        let mut new_path = parent.full_path.path.clone();
         new_path.push(entry.clone());
+        let idx = self.nodes.len();
         self.nodes.push(PropertyPathNode {
             properties: FxHashMap::default(),
             optional_properties: FxHashMap::default(),
             parent: Some(parent_idx),
             full_path: ReactiveScopeDependency {
-                identifier: parent_full_path.identifier,
-                reactive: parent_full_path.reactive,
+                identifier: parent_identifier,
+                reactive: parent_reactive,
                 path: new_path,
                 loc: entry.loc,
             },
@@ -801,9 +802,9 @@ impl PropertyPathRegistry {
             root: None,
         });
         if entry.optional {
-            self.nodes[parent_idx].optional_properties.insert(map_key, idx);
+            self.nodes[parent_idx].optional_properties.insert(entry.property.clone(), idx);
         } else {
-            self.nodes[parent_idx].properties.insert(map_key, idx);
+            self.nodes[parent_idx].properties.insert(entry.property.clone(), idx);
         }
         idx
     }
@@ -841,6 +842,37 @@ fn reduce_maybe_optional_chains(nodes: &mut BTreeSet<usize>, registry: &mut Prop
         let to_process: Vec<usize> = optional_chain_nodes.iter().copied().collect();
 
         for original_idx in to_process {
+            // Read-only pre-walk: resolve the rewritten chain through the existing maps.
+            let resolves_to_self = {
+                let root = registry.nodes[original_idx].full_path.identifier;
+                match registry.roots.get(&root).copied() {
+                    None => false,
+                    Some(mut curr) => {
+                        let mut all_found = true;
+                        for entry in &registry.nodes[original_idx].full_path.path {
+                            let use_non_optional = entry.optional && nodes.contains(&curr);
+                            let node = &registry.nodes[curr];
+                            let next = if entry.optional && !use_non_optional {
+                                node.optional_properties.get(&entry.property).copied()
+                            } else {
+                                node.properties.get(&entry.property).copied()
+                            };
+                            match next {
+                                Some(idx) => curr = idx,
+                                None => {
+                                    all_found = false;
+                                    break;
+                                }
+                            }
+                        }
+                        all_found && curr == original_idx
+                    }
+                }
+            };
+            if resolves_to_self {
+                continue;
+            }
+
             let full_path = registry.nodes[original_idx].full_path.clone();
 
             let mut curr_node = registry.get_or_create_identifier(
@@ -850,7 +882,8 @@ fn reduce_maybe_optional_chains(nodes: &mut BTreeSet<usize>, registry: &mut Prop
             );
 
             for entry in &full_path.path {
-                // If the base is known to be non-null (in the set), replace optional with non-optional
+                // If the base is known to be non-null (in the set), replace optional
+                // with non-optional. Mirrored by the read-only pre-walk above.
                 let next_entry = if entry.optional && nodes.contains(&curr_node) {
                     DependencyPathEntry {
                         property: entry.property.clone(),
