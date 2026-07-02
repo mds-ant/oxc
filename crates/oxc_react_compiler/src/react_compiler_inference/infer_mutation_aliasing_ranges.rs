@@ -505,15 +505,14 @@ pub fn infer_mutation_aliasing_ranges(
         seen_blocks.insert(block_id);
 
         // Process instruction effects
-        let instr_ids: Vec<_> = block.instructions.clone();
-        for instr_id in &instr_ids {
+        for instr_id in &block.instructions {
             let instr = &func.instructions[instr_id.0 as usize];
             let instr_eval_order = instr.id;
             let effects = match &instr.effects {
-                Some(e) => e.clone(),
+                Some(e) => e,
                 None => continue,
             };
-            for effect in &effects {
+            for effect in effects {
                 match effect {
                     AliasingEffect::Create { into, .. } => {
                         state.create(into, NodeValue::Object);
@@ -628,12 +627,12 @@ pub fn infer_mutation_aliasing_ranges(
         // Handle terminal effects (MaybeThrow and Return)
         let terminal_effects = match terminal {
             Terminal::MaybeThrow { effects, .. } | Terminal::Return { effects, .. } => {
-                effects.clone()
+                effects.as_ref()
             }
             _ => None,
         };
         if let Some(effects) = terminal_effects {
-            for effect in &effects {
+            for effect in effects {
                 match effect {
                     AliasingEffect::Alias { from, into } => {
                         state.assign(index, from, into);
@@ -748,16 +747,11 @@ pub fn infer_mutation_aliasing_ranges(
                     env.identifiers[phi.place.identifier.0 as usize].mutable_range.end
                         > first_instr_id;
 
-                (
-                    phi.place.identifier,
-                    phi.operands.values().map(|o| o.identifier).collect::<Vec<_>>(),
-                    is_mutated_after_creation,
-                    first_instr_id,
-                )
+                (phi.place.identifier, is_mutated_after_creation, first_instr_id)
             })
             .collect();
 
-        for (phi_id, _operand_ids, is_mutated_after_creation, first_instr_id) in &phi_data {
+        for (phi_id, is_mutated_after_creation, first_instr_id) in &phi_data {
             // Set phi place effect to Store
             // We need to find this phi in the block and set it
             let block = func.body.blocks.get_mut(&block_id).unwrap();
@@ -781,9 +775,8 @@ pub fn infer_mutation_aliasing_ranges(
         }
 
         let block = &func.body.blocks[&block_id];
-        let instr_ids: Vec<_> = block.instructions.clone();
 
-        for instr_id in &instr_ids {
+        for instr_id in &block.instructions {
             let instr = &func.instructions[instr_id.0 as usize];
             let eval_order = instr.id;
 
@@ -803,13 +796,10 @@ pub fn infer_mutation_aliasing_ranges(
             func.instructions[instr_id.0 as usize].lvalue.effect = Effect::ConditionallyMutate;
 
             // Also handle value-level lvalues (DeclareLocal, StoreLocal, etc.)
-            let value_lvalue_ids: Vec<IdentifierId> =
-                each_instruction_value_lvalue(&func.instructions[instr_id.0 as usize].value)
-                    .into_iter()
-                    .map(|p| p.identifier)
-                    .collect();
-            for vlid in &value_lvalue_ids {
-                let ident = &mut env.identifiers[vlid.0 as usize];
+            let value_lvalues =
+                each_instruction_value_lvalue(&func.instructions[instr_id.0 as usize].value);
+            for place in &value_lvalues {
+                let ident = &mut env.identifiers[place.identifier.0 as usize];
                 if ident.mutable_range.start == EvaluationOrder(0) {
                     ident.mutable_range.start = eval_order;
                 }
@@ -838,11 +828,12 @@ pub fn infer_mutation_aliasing_ranges(
                 continue;
             }
 
-            // Compute operand effects from instruction effects
-            let effects = instr.effects.as_ref().unwrap().clone();
+            // Compute operand effects from instruction effects. The borrow of
+            // `func.instructions` ends with this loop, before the mutations below.
+            let effects = instr.effects.as_ref().unwrap();
             let mut operand_effects: FxHashMap<IdentifierId, Effect> = FxHashMap::default();
 
-            for effect in &effects {
+            for effect in effects {
                 match effect {
                     AliasingEffect::Assign { from, into, .. }
                     | AliasingEffect::Alias { from, into }
