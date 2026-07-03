@@ -348,7 +348,6 @@ fn lower_block_statement_inner<'a>(
     // - function-scope ranges sorted by start (consumed only existentially).
     let hoistable_ids: FxHashSet<BindingId> = hoistable.iter().map(|b| b.0).collect();
     let mut refs_by_binding: FxHashMap<BindingId, Vec<(u32, u32)>> = FxHashMap::default();
-    let mut function_scope_ranges: Vec<(u32, u32)> = Vec::new();
     {
         let scope_info = builder.scope_info();
         for (&ref_nid, &ref_bid) in &scope_info.ref_node_id_to_binding {
@@ -364,15 +363,9 @@ fn lower_block_statement_inner<'a>(
         for refs in refs_by_binding.values_mut() {
             refs.sort_by_key(|&(pos, _)| pos);
         }
-        for (&pos, &sid) in &scope_info.node_to_scope {
-            if matches!(scope_info.scopes[sid.0 as usize].kind, ScopeKind::Function) {
-                if let Some(&end) = scope_info.node_to_scope_end.get(&pos) {
-                    function_scope_ranges.push((pos, end));
-                }
-            }
-        }
-        function_scope_ranges.sort_unstable_by_key(|&(pos, _)| pos);
     }
+    // Built lazily: function-declaration statements never consult it.
+    let mut function_scope_ranges: Option<Vec<(u32, u32)>> = None;
 
     for body_stmt in statements {
         let stmt_start = statement_start(body_stmt).unwrap_or(0);
@@ -386,12 +379,21 @@ fn lower_block_statement_inner<'a>(
             // For function declarations, fnDepth starts at 1 (all refs are inside)
             vec![(stmt_start, stmt_end)]
         } else {
-            let lo = function_scope_ranges.partition_point(|&(pos, _)| pos <= stmt_start);
-            function_scope_ranges[lo..]
-                .iter()
-                .take_while(|&&(pos, _)| pos < stmt_end)
-                .copied()
-                .collect()
+            let ranges = function_scope_ranges.get_or_insert_with(|| {
+                let scope_info = builder.scope_info();
+                let mut ranges: Vec<(u32, u32)> = Vec::new();
+                for (&pos, &sid) in &scope_info.node_to_scope {
+                    if matches!(scope_info.scopes[sid.0 as usize].kind, ScopeKind::Function) {
+                        if let Some(&end) = scope_info.node_to_scope_end.get(&pos) {
+                            ranges.push((pos, end));
+                        }
+                    }
+                }
+                ranges.sort_unstable_by_key(|&(pos, _)| pos);
+                ranges
+            });
+            let lo = ranges.partition_point(|&(pos, _)| pos <= stmt_start);
+            ranges[lo..].iter().take_while(|&&(pos, _)| pos < stmt_end).copied().collect()
         };
 
         // Find references to not-yet-declared hoistable bindings within this statement
