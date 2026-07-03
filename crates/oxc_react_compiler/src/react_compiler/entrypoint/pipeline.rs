@@ -33,6 +33,7 @@ use crate::react_compiler_inference::merge_overlapping_reactive_scopes_hir;
 use crate::react_compiler_inference::propagate_scope_dependencies_hir;
 use crate::react_compiler_lowering::FunctionNode;
 use crate::react_compiler_lowering::lower;
+use crate::react_compiler_lowering::source_loc::LineOffsets;
 use crate::react_compiler_optimization::constant_propagation;
 use crate::react_compiler_optimization::dead_code_elimination;
 use crate::react_compiler_optimization::drop_manual_memoization;
@@ -105,7 +106,7 @@ pub fn compile_fn<'a>(
     mode: CompilerOutputMode,
     env_config: &EnvironmentConfig,
     context: &mut ProgramContext,
-    line_offsets: &crate::react_compiler_lowering::source_loc::LineOffsets,
+    line_offsets: &LineOffsets,
 ) -> Result<CodegenFunction<'a>, CompilerError> {
     let mut env = Environment::with_config(env_config.clone());
     env.fn_type = fn_type;

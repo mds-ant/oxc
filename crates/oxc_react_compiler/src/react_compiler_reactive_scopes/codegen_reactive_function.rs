@@ -2796,7 +2796,7 @@ fn ox_codegen_object_expression<'a>(
                         };
 
                         let func = &cx.env.functions[lowered_func.func.0 as usize];
-                        let mut reactive_fn = build_reactive_function(&func, cx.env)?;
+                        let mut reactive_fn = build_reactive_function(func, cx.env)?;
                         prune_unused_labels(&mut reactive_fn, cx.env)?;
                         prune_unused_lvalues(&mut reactive_fn, cx.env);
 
