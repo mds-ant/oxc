@@ -1,0 +1,33 @@
+--- crates/oxc_react_compiler/examples/react_compiler.rs
++++ crates/oxc_react_compiler/examples/react_compiler.rs
+@@ -38,7 +38,9 @@
+     let allocator = Allocator::default();
+     let program = Parser::new(&allocator, &source_text, source_type).parse().program;
+
+-    let result = transform(&program, &allocator, default_plugin_options());
++    let mut options = default_plugin_options();
++    options.profiling = std::env::var_os("RC_TIMING").is_some();
++    let result = transform(&program, &allocator, options);
+
+     if !result.diagnostics.is_empty() {
+         println!("Diagnostics:\n");
+--- crates/oxc_react_compiler/src/lib.rs
++++ crates/oxc_react_compiler/src/lib.rs
+@@ -92,7 +92,17 @@
+
+     let file = convert_program(program, source_text);
+     let scope_info = convert_scope_info(&semantic, program);
++    let profiling = options.profiling;
+     let result = react_compiler::entrypoint::program::compile_program(file, scope_info, options);
++    if profiling {
++        let timing = match &result {
++            react_compiler::entrypoint::compile_result::CompileResult::Success { timing, .. }
++            | react_compiler::entrypoint::compile_result::CompileResult::Error { timing, .. } => timing,
++        };
++        for entry in timing {
++            eprintln!("TIMING {} {}", entry.name, entry.duration_us);
++        }
++    }
+
+     let diagnostics = compile_result_to_diagnostics(&result);
+     let (program_ast, events) = match result {

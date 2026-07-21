@@ -1,0 +1,1355 @@
+--- vendor/forked_react_compiler_inference/src/infer_mutation_aliasing_effects.rs	2006-07-24 01:21:28.000000000 +0000
++++ vendor/forked_react_compiler_inference/src/infer_mutation_aliasing_effects.rs	2026-07-20 14:05:55.719683730 +0000
+@@ -59,6 +59,9 @@
+     env: &mut Environment,
+     is_function_expression: bool,
+ ) -> Result<(), CompilerDiagnostic> {
++    // Per-pass intern pool for the immutable AbstractValues and value sets
++    // referenced by InferenceStates (see ValuePool).
++    let mut pool = ValuePool::new();
+     let mut initial_state = InferenceState::empty(env, is_function_expression);
+
+     // Map of blocks to the last (merged) incoming state that was processed
+@@ -67,33 +70,24 @@
+     // Initialize context variables
+     for ctx_place in &func.context {
+         let value_id = ValueId::new();
+-        initial_state.initialize(
+-            value_id,
+-            AbstractValue {
+-                kind: ValueKind::Context,
+-                reason: hashset_of(ValueReason::Other),
+-            },
+-        );
+-        initial_state.define(ctx_place.identifier, value_id);
++        let value = pool.intern_simple(ValueKind::Context, ValueReason::Other);
++        initial_state.initialize(value_id, value);
++        initial_state.define(&mut pool, ctx_place.identifier, value_id);
+     }
+
+-    let param_kind: AbstractValue = if is_function_expression {
+-        AbstractValue {
+-            kind: ValueKind::Mutable,
+-            reason: hashset_of(ValueReason::Other),
+-        }
++    // The same AbstractValue is shared by every param (matching TS, which
++    // passes the one `paramKind` object to each `initialize` call).
++    let param_kind: AbsValueId = if is_function_expression {
++        pool.intern_simple(ValueKind::Mutable, ValueReason::Other)
+     } else {
+-        AbstractValue {
+-            kind: ValueKind::Frozen,
+-            reason: hashset_of(ValueReason::ReactiveFunctionArgument),
+-        }
++        pool.intern_simple(ValueKind::Frozen, ValueReason::ReactiveFunctionArgument)
+     };
+
+     if func.fn_type == ReactFunctionType::Component {
+         // Component: at most 2 params (props, ref)
+         let params_len = func.params.len();
+         if params_len > 0 {
+-            infer_param(&func.params[0], &mut initial_state, &param_kind);
++            infer_param(&func.params[0], &mut initial_state, &mut pool, param_kind);
+         }
+         if params_len > 1 {
+             let ref_place = match &func.params[1] {
+@@ -101,18 +95,13 @@
+                 ParamPattern::Spread(s) => &s.place,
+             };
+             let value_id = ValueId::new();
+-            initial_state.initialize(
+-                value_id,
+-                AbstractValue {
+-                    kind: ValueKind::Mutable,
+-                    reason: hashset_of(ValueReason::Other),
+-                },
+-            );
+-            initial_state.define(ref_place.identifier, value_id);
++            let value = pool.intern_simple(ValueKind::Mutable, ValueReason::Other);
++            initial_state.initialize(value_id, value);
++            initial_state.define(&mut pool, ref_place.identifier, value_id);
+         }
+     } else {
+         for param in &func.params {
+-            infer_param(param, &mut initial_state, &param_kind);
++            infer_param(param, &mut initial_state, &mut pool, param_kind);
+         }
+     }
+
+@@ -122,17 +111,21 @@
+     fn queue(
+         queued_states: &mut FxIndexMap<BlockId, InferenceState>,
+         states_by_block: &FxHashMap<BlockId, InferenceState>,
++        pool: &mut ValuePool,
+         block_id: BlockId,
+         state: InferenceState,
+     ) {
+         if let Some(queued_state) = queued_states.get(&block_id) {
+-            let merged = queued_state.merge(&state);
+-            let new_state = merged.unwrap_or_else(|| queued_state.clone());
+-            queued_states.insert(block_id, new_state);
++            // Re-insert only when the merge produced a changed state; merge()
++            // returns None when `state` adds nothing to the queued state, in
++            // which case the queued state is already correct as-is.
++            if let Some(new_state) = queued_state.merge(pool, &state) {
++                queued_states.insert(block_id, new_state);
++            }
+         } else {
+             let prev_state = states_by_block.get(&block_id);
+             if let Some(prev) = prev_state {
+-                let next_state = prev.merge(&state);
++                let next_state = prev.merge(pool, &state);
+                 if let Some(next) = next_state {
+                     queued_states.insert(block_id, next);
+                 }
+@@ -145,6 +138,7 @@
+     queue(
+         &mut queued_states,
+         &states_by_block,
++        &mut pool,
+         func.body.entry,
+         initial_state,
+     );
+@@ -186,10 +180,14 @@
+                 None => continue,
+             };
+
++            // Keep a copy of the merged incoming state for this block (so later
++            // queue() calls can detect whether new incoming states actually change
++            // anything), and use the incoming state itself as the working state.
++            // (Previously the incoming state was cloned twice and then dropped.)
+             states_by_block.insert(block_id, incoming_state.clone());
+-            let mut state = incoming_state.clone();
++            let mut state = incoming_state;
+
+-            infer_block(&mut context, &mut state, block_id, func, env)?;
++            infer_block(&mut context, &mut pool, &mut state, block_id, func, env)?;
+
+             // Check for uninitialized identifier access (matches TS invariant:
+             // "Expected value kind to be initialized")
+@@ -222,16 +220,29 @@
+                 return Err(diag);
+             }
+
+-            // Queue successors
+-            let successors = terminal_successors(&func.body.blocks[&block_id].terminal);
++            // Queue successors. Every successor receives an equal copy of the
++            // post-block state; the last one can take ownership of it instead
++            // of a copy, saving one clone (and drop) per block visit.
++            let mut successors = terminal_successors(&func.body.blocks[&block_id].terminal);
++            let last_successor = successors.pop();
+             for next_block_id in successors {
+                 queue(
+                     &mut queued_states,
+                     &states_by_block,
++                    &mut pool,
+                     next_block_id,
+                     state.clone(),
+                 );
+             }
++            if let Some(next_block_id) = last_successor {
++                queue(
++                    &mut queued_states,
++                    &states_by_block,
++                    &mut pool,
++                    next_block_id,
++                    state,
++                );
++            }
+         }
+     }
+
+@@ -273,19 +284,261 @@
+ }
+
+ // =============================================================================
++// ValuePool: interned (hash-consed) AbstractValues and value sets
++// =============================================================================
++//
++// The TS implementation treats AbstractValue objects and the per-variable
++// value Sets as immutable and shares them by reference between InferenceState
++// copies, so copying a state is just two shallow Map copies.  The Rust port
++// previously deep-copied these on every state clone/merge, which made this
++// pass's cost grow quadratically with function size (every basic-block visit
++// copies the whole state).
++//
++// Here the immutable AbstractValues and value sets are interned in a per-pass
++// pool and referred to by small Copy handles.  Because interning is canonical
++// (structurally equal values/sets get the same handle), handle equality is
++// exactly structural equality, so the state merge's "did anything change?"
++// test reduces to comparing handles, and repeated block visits that recreate
++// the same values hit the fast paths.  A state copy is a plain memcpy of two
++// tables of Copy entries, and dropping a state frees two allocations.  The
++// pool only grows (bounded by the distinct values/sets a function's analysis
++// produces) and is released when the pass finishes.
++
++/// Handle to an interned AbstractValue in a [ValuePool].
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++struct AbsValueId(u32);
++
++/// Handle to an interned (sorted, deduplicated) set of ValueIds in a
++/// [ValuePool].
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++struct ValueSetId(u32);
++
++const VALUE_KIND_COUNT: usize = 6;
++const VALUE_REASON_COUNT: usize = 12;
++
++fn value_kind_index(kind: ValueKind) -> usize {
++    match kind {
++        ValueKind::Mutable => 0,
++        ValueKind::Frozen => 1,
++        ValueKind::Primitive => 2,
++        ValueKind::MaybeFrozen => 3,
++        ValueKind::Global => 4,
++        ValueKind::Context => 5,
++    }
++}
++
++fn value_reason_index(reason: ValueReason) -> usize {
++    match reason {
++        ValueReason::KnownReturnSignature => 0,
++        ValueReason::State => 1,
++        ValueReason::ReducerState => 2,
++        ValueReason::Context => 3,
++        ValueReason::Effect => 4,
++        ValueReason::HookCaptured => 5,
++        ValueReason::HookReturn => 6,
++        ValueReason::Global => 7,
++        ValueReason::JsxCaptured => 8,
++        ValueReason::StoreLocal => 9,
++        ValueReason::ReactiveFunctionArgument => 10,
++        ValueReason::Other => 11,
++    }
++}
++
++struct ValuePool {
++    values: Vec<AbstractValue>,
++    /// Interning index for values with zero or one reason (the common case),
++    /// keyed by (kind, reason). Slot VALUE_REASON_COUNT is the empty-reason value.
++    simple_values: [Option<AbsValueId>; VALUE_KIND_COUNT * (VALUE_REASON_COUNT + 1)],
++    /// Interning index for values with two or more reasons, keyed by the kind
++    /// and the reasons in insertion order (the order is observable through
++    /// primary_reason, so it is part of the value's identity).
++    multi_values: FxHashMap<(usize, Box<[ValueReason]>), AbsValueId>,
++    /// Memoized merge_abstract_values results, keyed by (a, b) in argument
++    /// order (the merged reason order depends on the argument order).
++    merge_cache: FxHashMap<(AbsValueId, AbsValueId), AbsValueId>,
++    sets: Vec<Box<[ValueId]>>,
++    singleton_sets: FxHashMap<ValueId, ValueSetId>,
++    multi_sets: FxHashMap<Box<[ValueId]>, ValueSetId>,
++    /// Memoized set unions, keyed by the (smaller, larger) handle pair.
++    union_cache: FxHashMap<(ValueSetId, ValueSetId), ValueSetId>,
++}
++
++impl ValuePool {
++    fn new() -> Self {
++        ValuePool {
++            values: Vec::new(),
++            simple_values: [None; VALUE_KIND_COUNT * (VALUE_REASON_COUNT + 1)],
++            multi_values: FxHashMap::default(),
++            merge_cache: FxHashMap::default(),
++            sets: Vec::new(),
++            singleton_sets: FxHashMap::default(),
++            multi_sets: FxHashMap::default(),
++            union_cache: FxHashMap::default(),
++        }
++    }
++
++    fn get(&self, id: AbsValueId) -> &AbstractValue {
++        &self.values[id.0 as usize]
++    }
++
++    fn kind_of(&self, id: AbsValueId) -> ValueKind {
++        self.values[id.0 as usize].kind
++    }
++
++    /// Intern an AbstractValue, returning the handle of the canonical copy.
++    fn intern(&mut self, value: AbstractValue) -> AbsValueId {
++        if value.reason.len() <= 1 {
++            let reason_slot = value
++                .reason
++                .first()
++                .map_or(VALUE_REASON_COUNT, |r| value_reason_index(*r));
++            let slot = value_kind_index(value.kind) * (VALUE_REASON_COUNT + 1) + reason_slot;
++            if let Some(id) = self.simple_values[slot] {
++                return id;
++            }
++            let id = AbsValueId(self.values.len() as u32);
++            self.values.push(value);
++            self.simple_values[slot] = Some(id);
++            id
++        } else {
++            let key = (
++                value_kind_index(value.kind),
++                value.reason.iter().copied().collect::<Box<[ValueReason]>>(),
++            );
++            if let Some(&id) = self.multi_values.get(&key) {
++                return id;
++            }
++            let id = AbsValueId(self.values.len() as u32);
++            self.values.push(value);
++            self.multi_values.insert(key, id);
++            id
++        }
++    }
++
++    /// Intern the single-reason AbstractValue { kind, {reason} }.
++    fn intern_simple(&mut self, kind: ValueKind, reason: ValueReason) -> AbsValueId {
++        let slot = value_kind_index(kind) * (VALUE_REASON_COUNT + 1) + value_reason_index(reason);
++        if let Some(id) = self.simple_values[slot] {
++            return id;
++        }
++        self.intern(AbstractValue {
++            kind,
++            reason: hashset_of(reason),
++        })
++    }
++
++    /// Merge two abstract values, mirroring TS `mergeAbstractValues`.
++    /// Returns `a` itself when merging adds nothing to it.
++    fn merge_values(&mut self, a: AbsValueId, b: AbsValueId) -> AbsValueId {
++        if a == b {
++            return a;
++        }
++        if let Some(&merged) = self.merge_cache.get(&(a, b)) {
++            return merged;
++        }
++        let (a_kind, b_kind) = (self.kind_of(a), self.kind_of(b));
++        let kind = merge_value_kinds(a_kind, b_kind);
++        let merged = if kind == a_kind
++            && kind == b_kind
++            && is_superset(&self.get(a).reason, &self.get(b).reason)
++        {
++            a
++        } else {
++            let mut reason = self.get(a).reason.clone();
++            for r in &self.get(b).reason {
++                reason.insert(*r);
++            }
++            self.intern(AbstractValue { kind, reason })
++        };
++        self.merge_cache.insert((a, b), merged);
++        merged
++    }
++
++    fn set(&self, id: ValueSetId) -> &[ValueId] {
++        &self.sets[id.0 as usize]
++    }
++
++    fn singleton_set(&mut self, value_id: ValueId) -> ValueSetId {
++        if let Some(&id) = self.singleton_sets.get(&value_id) {
++            return id;
++        }
++        let id = ValueSetId(self.sets.len() as u32);
++        self.sets.push(Box::new([value_id]));
++        self.singleton_sets.insert(value_id, id);
++        id
++    }
++
++    /// Intern an already sorted, deduplicated, non-empty list of ValueIds.
++    fn intern_sorted_set(&mut self, sorted: &[ValueId]) -> ValueSetId {
++        debug_assert!(!sorted.is_empty());
++        if let [single] = sorted {
++            return self.singleton_set(*single);
++        }
++        if let Some(&id) = self.multi_sets.get(sorted) {
++            return id;
++        }
++        let id = ValueSetId(self.sets.len() as u32);
++        let boxed: Box<[ValueId]> = sorted.into();
++        self.sets.push(boxed.clone());
++        self.multi_sets.insert(boxed, id);
++        id
++    }
++
++    fn set_union(&mut self, a: ValueSetId, b: ValueSetId) -> ValueSetId {
++        if a == b {
++            return a;
++        }
++        let key = if a.0 <= b.0 { (a, b) } else { (b, a) };
++        if let Some(&u) = self.union_cache.get(&key) {
++            return u;
++        }
++        let sa = self.set(a);
++        let sb = self.set(b);
++        let mut merged: Vec<ValueId> = Vec::with_capacity(sa.len() + sb.len());
++        let (mut i, mut j) = (0, 0);
++        while i < sa.len() && j < sb.len() {
++            match sa[i].0.cmp(&sb[j].0) {
++                std::cmp::Ordering::Less => {
++                    merged.push(sa[i]);
++                    i += 1;
++                }
++                std::cmp::Ordering::Greater => {
++                    merged.push(sb[j]);
++                    j += 1;
++                }
++                std::cmp::Ordering::Equal => {
++                    merged.push(sa[i]);
++                    i += 1;
++                    j += 1;
++                }
++            }
++        }
++        merged.extend_from_slice(&sa[i..]);
++        merged.extend_from_slice(&sb[j..]);
++        let u = self.intern_sorted_set(&merged);
++        self.union_cache.insert(key, u);
++        u
++    }
++
++}
++
++// =============================================================================
+ // InferenceState
+ // =============================================================================
+
+ /// The abstract state tracked during inference.
+-/// Uses interior mutability via a struct with direct fields (no Rc needed since
+-/// we always have exclusive access in the pass).
++///
++/// Both maps hold only Copy handles into the per-pass [ValuePool], so
++/// cloning a state is a shallow copy of two tables and dropping one frees
++/// two allocations (no per-entry work), matching the TS semantics where the
++/// AbstractValues and value Sets are immutable and shared between states.
+ #[derive(Debug, Clone)]
+ struct InferenceState {
+     is_function_expression: bool,
+     /// The kind of each value, based on its allocation site
+-    values: FxHashMap<ValueId, AbstractValue>,
++    values: FxHashMap<ValueId, AbsValueId>,
+     /// The set of values pointed to by each identifier
+-    variables: FxHashMap<IdentifierId, FxHashSet<ValueId>>,
++    variables: FxHashMap<IdentifierId, ValueSetId>,
+     /// Tracks uninitialized identifier access errors (matches TS invariant).
+     /// Uses Cell so it can be set from `&self` methods like `kind()`.
+     /// Stores (IdentifierId, usage_loc) where usage_loc is the source location
+@@ -306,82 +559,71 @@
+     /// Check the kind of a place, recording the usage location for error reporting.
+     fn kind_with_loc(
+         &self,
++        pool: &mut ValuePool,
+         place_id: IdentifierId,
+         usage_loc: Option<SourceLocation>,
+-    ) -> AbstractValue {
++    ) -> AbsValueId {
+         let values = match self.variables.get(&place_id) {
+-            Some(v) => v,
++            Some(v) => *v,
+             None => {
+                 if self.uninitialized_access.get().is_none() {
+                     self.uninitialized_access.set(Some((place_id, usage_loc)));
+                 }
+-                return AbstractValue {
+-                    kind: ValueKind::Mutable,
+-                    reason: hashset_of(ValueReason::Other),
+-                };
++                return pool.intern_simple(ValueKind::Mutable, ValueReason::Other);
+             }
+         };
+-        let mut merged_kind: Option<AbstractValue> = None;
+-        for value_id in values {
+-            let kind = match self.values.get(value_id) {
+-                Some(k) => k,
++        let mut merged_kind: Option<AbsValueId> = None;
++        for i in 0..pool.set(values).len() {
++            let value_id = pool.set(values)[i];
++            let kind = match self.values.get(&value_id) {
++                Some(k) => *k,
+                 None => continue,
+             };
+             merged_kind = Some(match merged_kind {
+-                Some(prev) => merge_abstract_values(&prev, kind),
+-                None => kind.clone(),
++                Some(prev) => pool.merge_values(prev, kind),
++                None => kind,
+             });
+         }
+-        merged_kind.unwrap_or_else(|| AbstractValue {
+-            kind: ValueKind::Mutable,
+-            reason: hashset_of(ValueReason::Other),
+-        })
++        merged_kind.unwrap_or_else(|| pool.intern_simple(ValueKind::Mutable, ValueReason::Other))
+     }
+
+-    fn initialize(&mut self, value_id: ValueId, kind: AbstractValue) {
+-        self.values.insert(value_id, kind);
++    fn initialize(&mut self, value_id: ValueId, value: AbsValueId) {
++        self.values.insert(value_id, value);
+     }
+
+-    fn define(&mut self, place_id: IdentifierId, value_id: ValueId) {
+-        let mut set = FxHashSet::default();
+-        set.insert(value_id);
++    fn define(&mut self, pool: &mut ValuePool, place_id: IdentifierId, value_id: ValueId) {
++        let set = pool.singleton_set(value_id);
+         self.variables.insert(place_id, set);
+     }
+
+-    fn assign(&mut self, into: IdentifierId, from: IdentifierId) {
++    fn assign(&mut self, pool: &mut ValuePool, into: IdentifierId, from: IdentifierId) {
+         let values = match self.variables.get(&from) {
+-            Some(v) => v.clone(),
++            // The value sets are immutable, so `into` shares `from`'s set.
++            Some(v) => *v,
+             None => {
+                 // Create a stable value for uninitialized identifiers
+                 // Use a deterministic ID based on the from identifier
+                 let vid = ValueId(from.0 | 0x80000000);
+-                let mut set = FxHashSet::default();
+-                set.insert(vid);
+                 if !self.values.contains_key(&vid) {
+-                    self.values.insert(
+-                        vid,
+-                        AbstractValue {
+-                            kind: ValueKind::Mutable,
+-                            reason: hashset_of(ValueReason::Other),
+-                        },
+-                    );
++                    let value = pool.intern_simple(ValueKind::Mutable, ValueReason::Other);
++                    self.values.insert(vid, value);
+                 }
+-                set
++                pool.singleton_set(vid)
+             }
+         };
+         self.variables.insert(into, values);
+     }
+
+-    fn append_alias(&mut self, place: IdentifierId, value: IdentifierId) {
++    fn append_alias(&mut self, pool: &mut ValuePool, place: IdentifierId, value: IdentifierId) {
+         let new_values = match self.variables.get(&value) {
+-            Some(v) => v.clone(),
++            Some(v) => *v,
+             None => return,
+         };
+         let prev_values = match self.variables.get(&place) {
+-            Some(v) => v.clone(),
++            Some(v) => *v,
+             None => return,
+         };
+-        let merged: FxHashSet<ValueId> = prev_values.union(&new_values).copied().collect();
++        let merged = pool.set_union(prev_values, new_values);
+         self.variables.insert(place, merged);
+     }
+
+@@ -389,32 +631,33 @@
+         self.variables.contains_key(&place_id)
+     }
+
+-    fn values_for(&self, place_id: IdentifierId) -> Vec<ValueId> {
++    fn values_for(&self, pool: &ValuePool, place_id: IdentifierId) -> Vec<ValueId> {
+         match self.variables.get(&place_id) {
+-            Some(values) => values.iter().copied().collect(),
++            Some(values) => pool.set(*values).to_vec(),
+             None => Vec::new(),
+         }
+     }
+
+     #[allow(dead_code)]
+-    fn kind_opt(&self, place_id: IdentifierId) -> Option<AbstractValue> {
+-        let values = self.variables.get(&place_id)?;
+-        let mut merged_kind: Option<AbstractValue> = None;
+-        for value_id in values {
+-            let kind = self.values.get(value_id)?;
++    fn kind_opt(&self, pool: &mut ValuePool, place_id: IdentifierId) -> Option<AbsValueId> {
++        let values = *self.variables.get(&place_id)?;
++        let mut merged_kind: Option<AbsValueId> = None;
++        for i in 0..pool.set(values).len() {
++            let value_id = pool.set(values)[i];
++            let kind = *self.values.get(&value_id)?;
+             merged_kind = Some(match merged_kind {
+-                Some(prev) => merge_abstract_values(&prev, kind),
+-                None => kind.clone(),
++                Some(prev) => pool.merge_values(prev, kind),
++                None => kind,
+             });
+         }
+         merged_kind
+     }
+
+-    fn kind(&self, place_id: IdentifierId) -> AbstractValue {
+-        self.kind_with_loc(place_id, None)
++    fn kind(&self, pool: &mut ValuePool, place_id: IdentifierId) -> AbsValueId {
++        self.kind_with_loc(pool, place_id, None)
+     }
+
+-    fn freeze(&mut self, place_id: IdentifierId, reason: ValueReason) -> bool {
++    fn freeze(&mut self, pool: &mut ValuePool, place_id: IdentifierId, reason: ValueReason) -> bool {
+         // Check if defined first to avoid recording uninitialized access error.
+         // Freeze on undefined identifiers is a no-op — this matches the TS
+         // behavior where freeze() is never called on undefined identifiers
+@@ -422,12 +665,12 @@
+         if !self.variables.contains_key(&place_id) {
+             return false;
+         }
+-        let value = self.kind(place_id);
+-        match value.kind {
++        let value = self.kind(pool, place_id);
++        match pool.kind_of(value) {
+             ValueKind::Context | ValueKind::Mutable | ValueKind::MaybeFrozen => {
+-                let value_ids: Vec<ValueId> = self.values_for(place_id);
++                let value_ids: Vec<ValueId> = self.values_for(pool, place_id);
+                 for vid in value_ids {
+-                    self.freeze_value(vid, reason);
++                    self.freeze_value(pool, vid, reason);
+                 }
+                 true
+             }
+@@ -435,14 +678,9 @@
+         }
+     }
+
+-    fn freeze_value(&mut self, value_id: ValueId, reason: ValueReason) {
+-        self.values.insert(
+-            value_id,
+-            AbstractValue {
+-                kind: ValueKind::Frozen,
+-                reason: hashset_of(reason),
+-            },
+-        );
++    fn freeze_value(&mut self, pool: &mut ValuePool, value_id: ValueId, reason: ValueReason) {
++        let frozen = pool.intern_simple(ValueKind::Frozen, reason);
++        self.values.insert(value_id, frozen);
+         // Note: In TS, this also transitively freezes FunctionExpression captures
+         // if enableTransitivelyFreezeFunctionExpressions is set. We skip that here
+         // since we don't have access to the function arena from within state.
+@@ -451,15 +689,17 @@
+     #[allow(dead_code)]
+     fn mutate(
+         &self,
++        pool: &mut ValuePool,
+         variant: MutateVariant,
+         place_id: IdentifierId,
+         env: &Environment,
+     ) -> MutationResult {
+-        self.mutate_with_loc(variant, place_id, env, None)
++        self.mutate_with_loc(pool, variant, place_id, env, None)
+     }
+
+     fn mutate_with_loc(
+         &self,
++        pool: &mut ValuePool,
+         variant: MutateVariant,
+         place_id: IdentifierId,
+         env: &Environment,
+@@ -469,7 +709,8 @@
+         if react_compiler_hir::is_ref_or_ref_value(ty) {
+             return MutationResult::MutateRef;
+         }
+-        let kind = self.kind_with_loc(place_id, usage_loc).kind;
++        let value = self.kind_with_loc(pool, place_id, usage_loc);
++        let kind = pool.kind_of(value);
+         match variant {
+             MutateVariant::MutateConditionally | MutateVariant::MutateTransitiveConditionally => {
+                 match kind {
+@@ -486,17 +727,20 @@
+         }
+     }
+
+-    fn merge(&self, other: &InferenceState) -> Option<InferenceState> {
+-        let mut next_values: Option<FxHashMap<ValueId, AbstractValue>> = None;
+-        let mut next_variables: Option<FxHashMap<IdentifierId, FxHashSet<ValueId>>> = None;
+-
+-        // Merge values present in both
++    fn merge(&self, pool: &mut ValuePool, other: &InferenceState) -> Option<InferenceState> {
++        let mut next_values: Option<FxHashMap<ValueId, AbsValueId>> = None;
++        let mut next_variables: Option<FxHashMap<IdentifierId, ValueSetId>> = None;
++
++        // Merge values present in both. Handles are canonical (structurally
++        // equal values share a handle), so a merged handle that differs from
++        // this state's handle is exactly a change of kind or reasons.
+         for (id, this_value) in &self.values {
+             if let Some(other_value) = other.values.get(id) {
+-                let merged = merge_abstract_values(this_value, other_value);
+-                if merged.kind != this_value.kind
+-                    || !is_superset(&this_value.reason, &merged.reason)
+-                {
++                if this_value == other_value {
++                    continue;
++                }
++                let merged = pool.merge_values(*this_value, *other_value);
++                if merged != *this_value {
+                     let nv = next_values.get_or_insert_with(|| self.values.clone());
+                     nv.insert(*id, merged);
+                 }
+@@ -506,24 +750,20 @@
+         for (id, other_value) in &other.values {
+             if !self.values.contains_key(id) {
+                 let nv = next_values.get_or_insert_with(|| self.values.clone());
+-                nv.insert(*id, other_value.clone());
++                nv.insert(*id, *other_value);
+             }
+         }
+
+-        // Merge variables present in both
++        // Merge variables present in both (a differing union handle means
++        // `other` contributes at least one new value).
+         for (id, this_values) in &self.variables {
+             if let Some(other_values) = other.variables.get(id) {
+-                let mut has_new = false;
+-                for ov in other_values {
+-                    if !this_values.contains(ov) {
+-                        has_new = true;
+-                        break;
+-                    }
++                if this_values == other_values {
++                    continue;
+                 }
+-                if has_new {
++                let merged = pool.set_union(*this_values, *other_values);
++                if merged != *this_values {
+                     let nvars = next_variables.get_or_insert_with(|| self.variables.clone());
+-                    let merged: FxHashSet<ValueId> =
+-                        this_values.union(other_values).copied().collect();
+                     nvars.insert(*id, merged);
+                 }
+             }
+@@ -532,7 +772,7 @@
+         for (id, other_values) in &other.variables {
+             if !self.variables.contains_key(id) {
+                 let nvars = next_variables.get_or_insert_with(|| self.variables.clone());
+-                nvars.insert(*id, other_values.clone());
++                nvars.insert(*id, *other_values);
+             }
+         }
+
+@@ -550,19 +790,22 @@
+
+     fn infer_phi(
+         &mut self,
++        pool: &mut ValuePool,
+         phi_place_id: IdentifierId,
+         phi_operands: &FxIndexMap<BlockId, Place>,
+     ) {
+-        let mut values: FxHashSet<ValueId> = FxHashSet::default();
++        let mut values: Option<ValueSetId> = None;
+         for (_, operand) in phi_operands {
+             if let Some(operand_values) = self.variables.get(&operand.identifier) {
+-                for v in operand_values {
+-                    values.insert(*v);
+-                }
++                let operand_values = *operand_values;
++                values = Some(match values {
++                    Some(acc) => pool.set_union(acc, operand_values),
++                    None => operand_values,
++                });
+             }
+             // If not found, it's a backedge that will be handled later by merge
+         }
+-        if !values.is_empty() {
++        if let Some(values) = values {
+             self.variables.insert(phi_place_id, values);
+         }
+     }
+@@ -735,17 +978,8 @@
+ // merge helpers
+ // =============================================================================
+
+-fn merge_abstract_values(a: &AbstractValue, b: &AbstractValue) -> AbstractValue {
+-    let kind = merge_value_kinds(a.kind, b.kind);
+-    if kind == a.kind && kind == b.kind && is_superset(&a.reason, &b.reason) {
+-        return a.clone();
+-    }
+-    let mut reason = a.reason.clone();
+-    for r in &b.reason {
+-        reason.insert(*r);
+-    }
+-    AbstractValue { kind, reason }
+-}
++// merge_abstract_values (TS `mergeAbstractValues`) lives on ValuePool::merge_values
++// so its results can be memoized by handle.
+
+ fn merge_value_kinds(a: ValueKind, b: ValueKind) -> ValueKind {
+     if a == b {
+@@ -968,14 +1202,19 @@
+ // inferParam
+ // =============================================================================
+
+-fn infer_param(param: &ParamPattern, state: &mut InferenceState, param_kind: &AbstractValue) {
++fn infer_param(
++    param: &ParamPattern,
++    state: &mut InferenceState,
++    pool: &mut ValuePool,
++    param_kind: AbsValueId,
++) {
+     let place = match param {
+         ParamPattern::Place(p) => p,
+         ParamPattern::Spread(s) => &s.place,
+     };
+     let value_id = ValueId::new();
+-    state.initialize(value_id, param_kind.clone());
+-    state.define(place.identifier, value_id);
++    state.initialize(value_id, param_kind);
++    state.define(pool, place.identifier, value_id);
+ }
+
+ // =============================================================================
+@@ -984,6 +1223,7 @@
+
+ fn infer_block(
+     context: &mut Context,
++    pool: &mut ValuePool,
+     state: &mut InferenceState,
+     block_id: BlockId,
+     func: &mut HirFunction,
+@@ -998,7 +1238,7 @@
+         .map(|phi| (phi.place.identifier, phi.operands.clone()))
+         .collect();
+     for (place_id, operands) in &phis {
+-        state.infer_phi(*place_id, operands);
++        state.infer_phi(pool, *place_id, operands);
+     }
+
+     // Process instructions
+@@ -1020,6 +1260,7 @@
+         // Apply signature
+         let effects = apply_signature(
+             context,
++            pool,
+             state,
+             *instr_idx,
+             &func.instructions[instr_index],
+@@ -1073,10 +1314,12 @@
+                             InstructionValue::CallExpression { .. }
+                             | InstructionValue::MethodCall { .. } => {
+                                 state.append_alias(
++                                    pool,
+                                     handler_param.identifier,
+                                     instr.lvalue.identifier,
+                                 );
+-                                let kind = state.kind(instr.lvalue.identifier).kind;
++                                let lvalue_value = state.kind(pool, instr.lvalue.identifier);
++                                let kind = pool.kind_of(lvalue_value);
+                                 if kind == ValueKind::Mutable || kind == ValueKind::Context {
+                                     terminal_effects.push(context.intern_effect(
+                                         AliasingEffect::Alias {
+@@ -1131,6 +1374,7 @@
+
+ fn apply_signature(
+     context: &mut Context,
++    pool: &mut ValuePool,
+     state: &mut InferenceState,
+     instr_idx: u32,
+     instr: &react_compiler_hir::Instruction,
+@@ -1159,9 +1403,9 @@
+                     if !state.is_defined(mutate_value.identifier) {
+                         continue;
+                     }
+-                    let value_abstract = state.kind(mutate_value.identifier);
+-                    if value_abstract.kind == ValueKind::Frozen {
+-                        let reason_str = get_write_error_reason(&value_abstract);
++                    let value_abstract = state.kind(pool, mutate_value.identifier);
++                    if pool.kind_of(value_abstract) == ValueKind::Frozen {
++                        let reason_str = get_write_error_reason(pool.get(value_abstract));
+                         let ident = &env.identifiers[mutate_value.identifier.0 as usize];
+                         let variable = match &ident.name {
+                             Some(react_compiler_hir::IdentifierName::Named(n)) => {
+@@ -1213,6 +1457,7 @@
+     for effect in &sig_effects {
+         apply_effect(
+             context,
++            pool,
+             state,
+             effect.clone(),
+             &mut initialized,
+@@ -1227,14 +1472,9 @@
+     // edge cases where effects don't cover the lvalue (e.g. missing signature entries).
+     if !state.is_defined(instr.lvalue.identifier) {
+         let vid = ValueId(instr.lvalue.identifier.0 | 0x80000000);
+-        state.initialize(
+-            vid,
+-            AbstractValue {
+-                kind: ValueKind::Mutable,
+-                reason: hashset_of(ValueReason::Other),
+-            },
+-        );
+-        state.define(instr.lvalue.identifier, vid);
++        let value = pool.intern_simple(ValueKind::Mutable, ValueReason::Other);
++        state.initialize(vid, value);
++        state.define(pool, instr.lvalue.identifier, vid);
+     }
+
+     Ok(if effects.is_empty() {
+@@ -1254,12 +1494,13 @@
+ /// the TS `freezeValue` → `freeze` → `freezeValue` recursion chain.
+ fn freeze_function_captures_transitive(
+     state: &mut InferenceState,
+-    context: &Context,
++    function_values: &FxHashMap<ValueId, FunctionId>,
++    pool: &mut ValuePool,
+     env: &Environment,
+     value_id: ValueId,
+     reason: ValueReason,
+ ) {
+-    if let Some(&func_id) = context.function_values.get(&value_id) {
++    if let Some(&func_id) = function_values.get(&value_id) {
+         let ctx_ids: Vec<IdentifierId> = env.functions[func_id.0 as usize]
+             .context
+             .iter()
+@@ -1271,14 +1512,21 @@
+             if !state.variables.contains_key(&ctx_id) {
+                 continue;
+             }
+-            let kind = state.kind(ctx_id).kind;
+-            match kind {
++            let value = state.kind(pool, ctx_id);
++            match pool.kind_of(value) {
+                 ValueKind::Context | ValueKind::Mutable | ValueKind::MaybeFrozen => {
+-                    let vids: Vec<ValueId> = state.values_for(ctx_id);
++                    let vids: Vec<ValueId> = state.values_for(pool, ctx_id);
+                     for vid in vids {
+-                        state.freeze_value(vid, reason);
++                        state.freeze_value(pool, vid, reason);
+                         // Recurse into nested function captures
+-                        freeze_function_captures_transitive(state, context, env, vid, reason);
++                        freeze_function_captures_transitive(
++                            state,
++                            function_values,
++                            pool,
++                            env,
++                            vid,
++                            reason,
++                        );
+                     }
+                 }
+                 ValueKind::Frozen | ValueKind::Global | ValueKind::Primitive => {
+@@ -1295,6 +1543,7 @@
+
+ fn apply_effect(
+     context: &mut Context,
++    pool: &mut ValuePool,
+     state: &mut InferenceState,
+     effect: AliasingEffect,
+     initialized: &mut FxHashSet<IdentifierId>,
+@@ -1305,7 +1554,7 @@
+     let effect = context.intern_effect(effect);
+     match effect {
+         AliasingEffect::Freeze { ref value, reason } => {
+-            let did_freeze = state.freeze(value.identifier, reason);
++            let did_freeze = state.freeze(pool, value.identifier, reason);
+             if did_freeze {
+                 effects.push(effect.clone());
+                 // Transitively freeze FunctionExpression captures if enabled
+@@ -1317,9 +1566,16 @@
+                     // freezeValue() calls freeze() on each capture, which
+                     // calls freezeValue() again — creating a transitive
+                     // closure through arbitrarily nested function captures.
+-                    let value_ids: Vec<ValueId> = state.values_for(value.identifier);
++                    let value_ids: Vec<ValueId> = state.values_for(pool, value.identifier);
+                     for vid in &value_ids {
+-                        freeze_function_captures_transitive(state, context, env, *vid, reason);
++                        freeze_function_captures_transitive(
++                            state,
++                            &context.function_values,
++                            pool,
++                            env,
++                            *vid,
++                            reason,
++                        );
+                     }
+                 }
+             }
+@@ -1335,18 +1591,14 @@
+             );
+             initialized.insert(into.identifier);
+             let value_id = context.get_or_create_value_id(&effect);
+-            state.initialize(
+-                value_id,
+-                AbstractValue {
+-                    kind,
+-                    reason: hashset_of(reason),
+-                },
+-            );
+-            state.define(into.identifier, value_id);
++            let value = pool.intern_simple(kind, reason);
++            state.initialize(value_id, value);
++            state.define(pool, into.identifier, value_id);
+             effects.push(effect.clone());
+         }
+         AliasingEffect::ImmutableCapture { ref from, .. } => {
+-            let kind = state.kind(from.identifier).kind;
++            let from_value = state.kind(pool, from.identifier);
++            let kind = pool.kind_of(from_value);
+             match kind {
+                 ValueKind::Global | ValueKind::Primitive => {
+                     // no-op: don't track data flow for copy types
+@@ -1362,34 +1614,32 @@
+                 "[InferMutationAliasingEffects] Cannot re-initialize variable within an instruction"
+             );
+             initialized.insert(into.identifier);
+-            let from_value = state.kind(from.identifier);
++            let from_value = state.kind(pool, from.identifier);
+             let value_id = context.get_or_create_value_id(&effect);
+-            state.initialize(
+-                value_id,
+-                AbstractValue {
+-                    kind: from_value.kind,
+-                    reason: from_value.reason.clone(),
+-                },
+-            );
+-            state.define(into.identifier, value_id);
+-            match from_value.kind {
++            // The new value is structurally identical to `from_value`
++            // ({ kind, reason } copied), so it shares the interned value.
++            state.initialize(value_id, from_value);
++            state.define(pool, into.identifier, value_id);
++            let from_kind = pool.kind_of(from_value);
++            match from_kind {
+                 ValueKind::Primitive | ValueKind::Global => {
+-                    let first_reason = primary_reason(&from_value.reason);
++                    let first_reason = primary_reason(&pool.get(from_value).reason);
+                     effects.push(AliasingEffect::Create {
+-                        value: from_value.kind,
++                        value: from_kind,
+                         into: into.clone(),
+                         reason: first_reason,
+                     });
+                 }
+                 ValueKind::Frozen => {
+-                    let first_reason = primary_reason(&from_value.reason);
++                    let first_reason = primary_reason(&pool.get(from_value).reason);
+                     effects.push(AliasingEffect::Create {
+-                        value: from_value.kind,
++                        value: from_kind,
+                         into: into.clone(),
+                         reason: first_reason,
+                     });
+                     apply_effect(
+                         context,
++                        pool,
+                         state,
+                         AliasingEffect::ImmutableCapture {
+                             from: from.clone(),
+@@ -1423,7 +1673,8 @@
+                 if !state.is_defined(capture.identifier) {
+                     return false;
+                 }
+-                let k = state.kind(capture.identifier).kind;
++                let capture_value = state.kind(pool, capture.identifier);
++                let k = pool.kind_of(capture_value);
+                 k == ValueKind::Context || k == ValueKind::Mutable
+             });
+
+@@ -1459,7 +1710,8 @@
+                 if !state.is_defined(operand.identifier) {
+                     continue;
+                 }
+-                let kind = state.kind(operand.identifier).kind;
++                let operand_value = state.kind(pool, operand.identifier);
++                let kind = pool.kind_of(operand_value);
+                 if kind == ValueKind::Primitive
+                     || kind == ValueKind::Frozen
+                     || kind == ValueKind::Global
+@@ -1477,22 +1729,21 @@
+             let value_id = context.get_or_create_value_id(&effect);
+             // Track this value as a function expression so Apply can look it up
+             context.function_values.insert(value_id, function_id);
+-            state.initialize(
+-                value_id,
+-                AbstractValue {
+-                    kind: if is_mutable {
+-                        ValueKind::Mutable
+-                    } else {
+-                        ValueKind::Frozen
+-                    },
+-                    reason: FxIndexSet::default(),
++            let value = pool.intern(AbstractValue {
++                kind: if is_mutable {
++                    ValueKind::Mutable
++                } else {
++                    ValueKind::Frozen
+                 },
+-            );
+-            state.define(into.identifier, value_id);
++                reason: FxIndexSet::default(),
++            });
++            state.initialize(value_id, value);
++            state.define(pool, into.identifier, value_id);
+
+             for capture in captures {
+                 apply_effect(
+                     context,
++                    pool,
+                     state,
+                     AliasingEffect::Capture {
+                         from: capture.clone(),
+@@ -1517,14 +1768,16 @@
+             );
+
+             // Check destination kind
+-            let into_kind = state.kind_with_loc(into.identifier, into.loc).kind;
++            let into_value = state.kind_with_loc(pool, into.identifier, into.loc);
++            let into_kind = pool.kind_of(into_value);
+             let destination_type = match into_kind {
+                 ValueKind::Context => Some("context"),
+                 ValueKind::Mutable | ValueKind::MaybeFrozen => Some("mutable"),
+                 _ => None,
+             };
+
+-            let from_kind = state.kind_with_loc(from.identifier, from.loc).kind;
++            let from_kind_value = state.kind_with_loc(pool, from.identifier, from.loc);
++            let from_kind = pool.kind_of(from_kind_value);
+             let source_type = match from_kind {
+                 ValueKind::Context => Some("context"),
+                 ValueKind::Global | ValueKind::Primitive => None,
+@@ -1535,6 +1788,7 @@
+             if source_type == Some("frozen") {
+                 apply_effect(
+                     context,
++                    pool,
+                     state,
+                     AliasingEffect::ImmutableCapture {
+                         from: from.clone(),
+@@ -1554,6 +1808,7 @@
+             {
+                 apply_effect(
+                     context,
++                    pool,
+                     state,
+                     AliasingEffect::MaybeAlias {
+                         from: from.clone(),
+@@ -1572,11 +1827,12 @@
+                 "[InferMutationAliasingEffects] Cannot re-initialize variable within an instruction"
+             );
+             initialized.insert(into.identifier);
+-            let from_value = state.kind_with_loc(from.identifier, from.loc);
+-            match from_value.kind {
++            let from_value = state.kind_with_loc(pool, from.identifier, from.loc);
++            match pool.kind_of(from_value) {
+                 ValueKind::Frozen => {
+                     apply_effect(
+                         context,
++                        pool,
+                         state,
+                         AliasingEffect::ImmutableCapture {
+                             from: from.clone(),
+@@ -1593,14 +1849,10 @@
+                         .effect_value_id_cache
+                         .entry(cache_key)
+                         .or_insert_with(ValueId::new);
+-                    state.initialize(
+-                        value_id,
+-                        AbstractValue {
+-                            kind: from_value.kind,
+-                            reason: from_value.reason.clone(),
+-                        },
+-                    );
+-                    state.define(into.identifier, value_id);
++                    // The copied value is structurally identical to `from_value`,
++                    // so it shares the interned value.
++                    state.initialize(value_id, from_value);
++                    state.define(pool, into.identifier, value_id);
+                 }
+                 ValueKind::Global | ValueKind::Primitive => {
+                     let cache_key =
+@@ -1609,17 +1861,11 @@
+                         .effect_value_id_cache
+                         .entry(cache_key)
+                         .or_insert_with(ValueId::new);
+-                    state.initialize(
+-                        value_id,
+-                        AbstractValue {
+-                            kind: from_value.kind,
+-                            reason: from_value.reason.clone(),
+-                        },
+-                    );
+-                    state.define(into.identifier, value_id);
++                    state.initialize(value_id, from_value);
++                    state.define(pool, into.identifier, value_id);
+                 }
+                 _ => {
+-                    state.assign(into.identifier, from.identifier);
++                    state.assign(pool, into.identifier, from.identifier);
+                     effects.push(effect.clone());
+                 }
+             }
+@@ -1636,7 +1882,7 @@
+             // First, check if the callee is a locally-declared function expression
+             // whose aliasing effects we already know (TS lines 1016-1068)
+             if state.is_defined(function.identifier) {
+-                let function_values = state.values_for(function.identifier);
++                let function_values = state.values_for(pool, function.identifier);
+                 if function_values.len() == 1 {
+                     let value_id = function_values[0];
+                     if let Some(func_id) = context.function_values.get(&value_id).copied() {
+@@ -1667,6 +1913,7 @@
+                                 // Conditionally mutate the function itself first
+                                 apply_effect(
+                                     context,
++                                    pool,
+                                     state,
+                                     AliasingEffect::MutateTransitiveConditionally {
+                                         value: function.clone(),
+@@ -1679,6 +1926,7 @@
+                                 for se in sig_effs {
+                                     apply_effect(
+                                         context,
++                                        pool,
+                                         state,
+                                         se,
+                                         initialized,
+@@ -1730,7 +1978,7 @@
+                     )?;
+                     if let Some(sig_effs) = sig_effects {
+                         for se in sig_effs {
+-                            apply_effect(context, state, se, initialized, effects, env, func)?;
++                            apply_effect(context, pool, state, se, initialized, effects, env, func)?;
+                         }
+                         return Ok(());
+                     }
+@@ -1741,6 +1989,7 @@
+                     Vec::new();
+                 let legacy_effects = compute_effects_for_legacy_signature(
+                     state,
++                    pool,
+                     sig,
+                     into,
+                     receiver,
+@@ -1755,12 +2004,13 @@
+                     return Err(CompilerDiagnostic::from_detail(err_detail));
+                 }
+                 for le in legacy_effects {
+-                    apply_effect(context, state, le, initialized, effects, env, func)?;
++                    apply_effect(context, pool, state, le, initialized, effects, env, func)?;
+                 }
+             } else {
+                 // No signature: default behavior
+                 apply_effect(
+                     context,
++                    pool,
+                     state,
+                     AliasingEffect::Create {
+                         into: into.clone(),
+@@ -1783,6 +2033,7 @@
+                     } else {
+                         apply_effect(
+                             context,
++                            pool,
+                             state,
+                             AliasingEffect::MutateTransitiveConditionally {
+                                 value: operand.clone(),
+@@ -1800,6 +2051,7 @@
+                         if let Some(mutate_iter) = conditionally_mutate_iterator(operand, ty) {
+                             apply_effect(
+                                 context,
++                                pool,
+                                 state,
+                                 mutate_iter,
+                                 initialized,
+@@ -1812,6 +2064,7 @@
+
+                     apply_effect(
+                         context,
++                        pool,
+                         state,
+                         AliasingEffect::MaybeAlias {
+                             from: operand.clone(),
+@@ -1836,6 +2089,7 @@
+                         }
+                         apply_effect(
+                             context,
++                            pool,
+                             state,
+                             AliasingEffect::Capture {
+                                 from: operand.clone(),
+@@ -1868,7 +2122,8 @@
+                 _ => unreachable!(),
+             };
+             let value = mutate_place;
+-            let mutation_kind = state.mutate_with_loc(variant, value.identifier, env, value.loc);
++            let mutation_kind =
++                state.mutate_with_loc(pool, variant, value.identifier, env, value.loc);
+             if mutation_kind == MutationResult::Mutate {
+                 effects.push(effect.clone());
+             } else if mutation_kind == MutationResult::MutateRef {
+@@ -1879,7 +2134,7 @@
+                     MutateVariant::Mutate | MutateVariant::MutateTransitive
+                 )
+             {
+-                let abstract_value = state.kind(value.identifier);
++                let abstract_value = state.kind(pool, value.identifier);
+
+                 let ident = &env.identifiers[value.identifier.0 as usize];
+                 let decl_id = ident.declaration_id;
+@@ -1932,6 +2187,7 @@
+                     );
+                     apply_effect(
+                         context,
++                        pool,
+                         state,
+                         AliasingEffect::MutateFrozen {
+                             place: value.clone(),
+@@ -1943,7 +2199,7 @@
+                         func,
+                     )?;
+                 } else {
+-                    let reason_str = get_write_error_reason(&abstract_value);
++                    let reason_str = get_write_error_reason(pool.get(abstract_value));
+                     let variable = match &ident.name {
+                         Some(react_compiler_hir::IdentifierName::Named(n)) => format!("`{}`", n),
+                         _ => "value".to_string(),
+@@ -1971,7 +2227,7 @@
+                         });
+                     }
+
+-                    let error_kind = if abstract_value.kind == ValueKind::Frozen {
++                    let error_kind = if pool.kind_of(abstract_value) == ValueKind::Frozen {
+                         AliasingEffect::MutateFrozen {
+                             place: value.clone(),
+                             error: diagnostic,
+@@ -1982,7 +2238,7 @@
+                             error: diagnostic,
+                         }
+                     };
+-                    apply_effect(context, state, error_kind, initialized, effects, env, func)?;
++                    apply_effect(context, pool, state, error_kind, initialized, effects, env, func)?;
+                 }
+             }
+         }
+@@ -2577,6 +2833,7 @@
+
+ fn compute_effects_for_legacy_signature(
+     state: &InferenceState,
++    pool: &mut ValuePool,
+     signature: &FunctionSignature,
+     lvalue: &Place,
+     receiver: &Place,
+@@ -2627,7 +2884,7 @@
+     // If the function is mutable only if operands are mutable, and all
+     // arguments are immutable/non-mutating, short-circuit with simple aliasing.
+     if signature.mutable_only_if_operands_are_mutable
+-        && are_arguments_immutable_and_non_mutating(state, args, env, function_values)
++        && are_arguments_immutable_and_non_mutating(state, pool, args, env, function_values)
+     {
+         effects.push(AliasingEffect::Alias {
+             from: receiver.clone(),
+@@ -2785,6 +3042,7 @@
+ /// Corresponds to TS `areArgumentsImmutableAndNonMutating`.
+ fn are_arguments_immutable_and_non_mutating(
+     state: &InferenceState,
++    pool: &mut ValuePool,
+     args: &[PlaceOrSpreadOrHole],
+     env: &Environment,
+     function_values: &FxHashMap<ValueId, FunctionId>,
+@@ -2814,8 +3072,8 @@
+                     }
+                 }
+
+-                let kind = state.kind(place.identifier);
+-                match kind.kind {
++                let arg_value = state.kind(pool, place.identifier);
++                match pool.kind_of(arg_value) {
+                     ValueKind::Primitive | ValueKind::Frozen => {
+                         // Immutable values are ok, continue checking
+                     }
+@@ -2826,7 +3084,7 @@
+
+                 // Check if any value for this place is a function expression
+                 // that mutates its parameters (TS lines 2545-2557)
+-                let value_ids = state.values_for(place.identifier);
++                let value_ids = state.values_for(pool, place.identifier);
+                 for vid in &value_ids {
+                     if let Some(&func_id) = function_values.get(vid) {
+                         let inner_func = &env.functions[func_id.0 as usize];

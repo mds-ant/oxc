@@ -1,0 +1,3 @@
+{ "plugins": ["react"],
+  "categories": { "correctness": "off" },
+  "rules": { "react/react-compiler": ["error", { "reportAllBailouts": true }] } }

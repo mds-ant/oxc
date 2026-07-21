@@ -1,0 +1,4 @@
+file	lines	base_ms	patched_ms	ratio
+cf_00100.tsx	1809	9512	2571	3.7
+cf_00200.tsx	3609	39146	11639	3.4
+cf_00400.tsx	7209	205949	84624	2.4

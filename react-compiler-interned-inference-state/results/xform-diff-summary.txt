@@ -1,0 +1,5 @@
+      1 diff
+  12011 same
+cf_00400 sequential re-run (transform mode, example driver):
+  base:    exit 0, wall 257 s, md5 7d4d605ebf434f2a3d3048b1cadeda7f
+  patched: exit 0, wall  96 s, md5 7d4d605ebf434f2a3d3048b1cadeda7f  -> IDENTICAL

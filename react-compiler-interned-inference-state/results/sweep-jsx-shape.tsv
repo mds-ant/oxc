@@ -1,0 +1,5 @@
+file	lines	base_ms	patched_ms	ratio
+syn_00025.tsx	334	121	138	0.9
+syn_00050.tsx	659	255	188	1.4
+syn_00100.tsx	1309	817	596	1.4
+syn_00200.tsx	2609	3505	2427	1.4

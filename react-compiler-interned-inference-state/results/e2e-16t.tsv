@@ -1,0 +1,8 @@
+round	first	baseline_ms	patched_ms	load
+1	baseline	1812	1774	13.35
+2	patched	1729	1673	14.77
+3	baseline	1764	1549	15.75
+4	patched	1830	1598	15.75
+5	baseline	1923	1365	15.62
+6	patched	2011	1373	16.29
+7	baseline	1812	1554	15.62
