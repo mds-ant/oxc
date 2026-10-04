@@ -48,6 +48,8 @@ pub fn infer_reactive_scope_variables(
     // Phase 2: assign scopes
     // Maps each group root identifier to the ScopeId assigned to that group.
     let mut scopes: FxHashMap<IdentifierId, ScopeState> = FxHashMap::default();
+    // Each identifier that is assigned a scope, paired with that scope.
+    let mut scoped_identifiers: Vec<(IdentifierId, ScopeId)> = Vec::new();
 
     scope_identifiers.for_each(|identifier_id, group_id| {
         let ident_range = env.identifiers[identifier_id].mutable_range;
@@ -80,6 +82,7 @@ pub fn infer_reactive_scope_variables(
         // Assign the scope to this identifier
         let scope_id = state.scope_id;
         env.identifiers[identifier_id].scope = Some(scope_id);
+        scoped_identifiers.push((identifier_id, scope_id));
     });
 
     // Set span on each scope
@@ -88,15 +91,8 @@ pub fn infer_reactive_scope_variables(
     }
 
     // Update each identifier's mutable_range to match its scope's range
-    for (&_identifier_id, state) in &scopes {
-        let scope_range = env.scopes[state.scope_id].range;
-        // Find all identifiers with this scope and update their mutable_range
-        // We iterate through all identifiers and check their scope
-        for ident in &mut env.identifiers {
-            if ident.scope == Some(state.scope_id) {
-                ident.mutable_range = scope_range;
-            }
-        }
+    for (identifier_id, scope_id) in scoped_identifiers {
+        env.identifiers[identifier_id].mutable_range = env.scopes[scope_id].range;
     }
 
     // Validate scope ranges
