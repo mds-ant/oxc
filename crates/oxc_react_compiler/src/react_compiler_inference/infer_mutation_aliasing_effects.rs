@@ -203,32 +203,44 @@ pub fn infer_mutation_aliasing_effects<'a>(
     // needs no ordering assumption, and a successor missing from the map counts
     // as a back edge to stay conservative. The scan cannot go stale: `infer_block`
     // rewrites only terminal effects, never successor ids.
-    let has_back_edge = func.body.blocks.iter().enumerate().any(|(index, (_, block))| {
-        terminal_successors(&block.terminal).into_iter().any(|successor| {
+    // The sweeps below finish each range of cycles first, so only blocks inside one run again.
+    let mut in_cycle = vec![false; func.body.blocks.len()];
+    for (index, (_, block)) in func.body.blocks.iter().enumerate() {
+        for successor in terminal_successors(&block.terminal) {
             match func.body.blocks.get_index_of(&successor) {
-                Some(successor_index) => successor_index <= index,
-                None => true,
+                Some(successor_index) if successor_index > index => {}
+                Some(successor_index) => in_cycle[successor_index..=index].fill(true),
+                None => in_cycle.fill(true),
             }
-        })
-    });
+        }
+    }
 
+    let block_ids: Vec<BlockId> = func.body.blocks.keys().copied().collect();
+    let mut sweep_start = 0;
     let mut iteration_count = 0;
 
-    while !queued_states.is_empty() {
+    'sweep: while !queued_states.is_empty() {
         iteration_count += 1;
         if iteration_count > 100 {
             return Err(diagnostics::invariant_infer_mutation_aliasing_effects_potential_infinite_loop_value_temporary_place_or_effect_no());
         }
 
-        // Collect block IDs to process in order
-        let block_ids: Vec<BlockId> = func.body.blocks.keys().copied().collect();
-        for block_id in block_ids {
+        for (index, &block_id) in block_ids.iter().enumerate().skip(sweep_start) {
+            // Sweep a range of cycles until it is stable, so that every block after it runs once.
+            if !in_cycle[index] {
+                if block_ids[sweep_start..index].iter().any(|id| queued_states.contains_key(id)) {
+                    continue 'sweep;
+                }
+                sweep_start = index + 1;
+                iteration_count = 1; // The guard counts the sweeps over one range.
+            }
+
             let incoming_state = match queued_states.swap_remove(&block_id) {
                 Some(s) => s,
                 None => continue,
             };
 
-            if has_back_edge {
+            if in_cycle[index] {
                 states_by_block.insert(block_id, incoming_state.clone());
             }
             let mut state = incoming_state;
